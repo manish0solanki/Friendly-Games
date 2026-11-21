@@ -6,7 +6,7 @@ import { fetchQuote, hasQuotes } from '../lib/quote';
 import type { Outcome } from '../lib/types';
 import { sportIcon } from '../lib/sports';
 import { eventPath, kickoff, pickLabel } from '../lib/util';
-import { Coins, Empty } from '../components/bits';
+import { Coins, ConfirmingNote, Empty } from '../components/bits';
 
 function CashOutButton({ betId, eventId, startTime, stake, odds, pick }: { betId: string; eventId: string; startTime: string; stake: number; odds: number; pick: Outcome }) {
   const { backend, refresh, toast } = useApp();
@@ -106,6 +106,8 @@ export function MyBets() {
                   <div className="sub">
                     {ev.league} · {k.day} {k.time}
                   </div>
+                  {b.status === 'pending' && <ConfirmingNote since={b.createdAt} />}
+                  {b.status === 'open' && b.cashoutRequestedAt && <ConfirmingNote since={b.cashoutRequestedAt} what="Cash out" />}
                 </div>
                 <div className="amt">
                   <span className={`status ${b.status}`}>{b.status === 'pending' ? 'confirming…' : b.status === 'cashed' ? 'cashed out' : b.status}</span>
@@ -114,7 +116,7 @@ export function MyBets() {
                   </div>
                   <div className="sub num">
                     {b.status === 'pending' ? (
-                      <>Confirms ~60s after placing if the score holds</>
+                      <>To return {fmtCoins(b.stake * b.odds)}</>
                     ) : b.status === 'open' ? (
                       <>To return {fmtCoins(b.stake * b.odds)}</>
                     ) : b.status === 'cashed' ? (
@@ -129,7 +131,7 @@ export function MyBets() {
                   </div>
                   {b.status === 'open' && b.cashoutRequestedAt && (
                     <div className="sub" style={{ color: '#d8b4fe' }}>
-                      Cash out {fmtCoins(b.cashoutValue ?? 0)} confirming…
+                      Cashing out for {fmtCoins(b.cashoutValue ?? 0)}
                     </div>
                   )}
                   {b.status === 'open' && !b.cashoutRequestedAt && data.group.liveBetting && hasQuotes(ev.id) && !ev.settledAt && Date.parse(ev.startTime) <= Date.now() && (

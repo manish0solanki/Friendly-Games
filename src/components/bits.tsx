@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
 import { colorFor } from '../lib/util';
 import { fmtCoins } from '../lib/odds';
 
@@ -66,6 +66,35 @@ export function SkeletonRows({ n = 4 }: { n?: number }) {
           <div className="skeleton" style={{ width: 150, height: 44 }} />
         </div>
       ))}
+    </div>
+  );
+}
+
+/** Re-renders every second (for countdowns). */
+export function useNow(intervalMs = 1000): number {
+  const [now, setNow] = useState(Date.now());
+  useEffect(() => {
+    const t = setInterval(() => setNow(Date.now()), intervalMs);
+    return () => clearInterval(t);
+  }, [intervalMs]);
+  return now;
+}
+
+/** Live bet / cash out waiting for its 60-second score check. */
+export function ConfirmingNote({ since, what = 'Bet' }: { since: string; what?: string }) {
+  const now = useNow();
+  const left = Math.ceil(60 - (now - Date.parse(since)) / 1000);
+  return (
+    <div className="confirming-note" aria-live="polite">
+      {left > 0 ? (
+        <>
+          <span className="clock">⏱</span> {what} confirms in {left}s if the score holds
+        </>
+      ) : (
+        <>
+          <span className="spin">⟳</span> Checking the score…
+        </>
+      )}
     </div>
   );
 }

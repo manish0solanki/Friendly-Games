@@ -124,7 +124,15 @@ export function AppProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     refresh();
     const t = setInterval(refresh, IS_ONLINE ? 20_000 : 60_000);
-    return () => clearInterval(t);
+    // phones freeze background tabs; catch up as soon as the app is visible again
+    const onVisible = () => document.visibilityState === 'visible' && refresh();
+    document.addEventListener('visibilitychange', onVisible);
+    window.addEventListener('focus', onVisible);
+    return () => {
+      clearInterval(t);
+      document.removeEventListener('visibilitychange', onVisible);
+      window.removeEventListener('focus', onVisible);
+    };
   }, [refresh]);
 
   const refreshGroups = useCallback(async () => {

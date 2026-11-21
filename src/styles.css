@@ -417,3 +417,13 @@ textarea.input { height: auto; padding: 10px 12px; resize: vertical; }
 .toggle.on::after { transform: translateX(20px); }
 .odd-note { height: 44px; border-radius: var(--radius-sm); border: 1px dashed var(--line-2); display: grid; place-items: center; align-content: center; gap: 1px; font-size: 11.5px; font-weight: 700; color: var(--muted); text-align: center; padding: 0 6px; }
 .odd-note span { font-size: 10.5px; font-weight: 600; color: var(--dim); }
+.confirming-note { display: inline-flex; align-items: center; gap: 6px; margin-top: 8px; padding: 5px 10px; border-radius: 8px; background: rgba(250,204,21,.08); border: 1px solid rgba(250,204,21,.25); color: #fde68a; font-size: 12.5px; font-weight: 600; }
+.confirming-note .spin { display: inline-block; animation: spin 1s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+/* keep the stake column from squeezing the bet details on phones */
+.bet-item .amt { max-width: 45%; }
+@media (max-width: 600px) {
+  .bet-item { grid-template-columns: minmax(0, 1fr); }
+  .bet-item .amt { max-width: none; text-align: left; display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; }
+  .bet-item .amt .row { justify-content: flex-start !important; }
+}

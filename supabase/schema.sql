@@ -410,16 +410,14 @@ create or replace function public.fg_settle_event(p_event_id text, p_result text
 returns fg_events language plpgsql security definer set search_path = public as $$
 declare e fg_events; v jsonb;
 begin
-  if auth.uid() is null then raise exception 'Please sign in'; end if;
   select * into e from fg_events where id = p_event_id for update;
   if not found then raise exception 'Event not found'; end if;
   if e.settled_at is not null then return e; end if;
 
   if e.group_id is not null then
-    if not fg_is_admin(e.group_id) then raise exception 'Only group admins can settle custom events'; end if;
+    if auth.uid() is null or not fg_is_admin(e.group_id) then raise exception 'Only group admins can settle custom events'; end if;
   else
-    -- real matches settle only on a server-signed final result
-    if not (fg_is_super() or exists (select 1 from fg_members where user_id = auth.uid())) then raise exception 'Not allowed'; end if;
+    -- real matches settle only on a server-signed final result (from the app or the every-minute job)
     v := fg_verify_quote(p_quote, p_event_id, 300);
     p_result := v->>'result';
     if p_result is null then raise exception 'This match has not finished yet'; end if;
@@ -550,7 +548,7 @@ create or replace function public.fg_confirm_pending(p_event_id text, p_quote js
 returns integer language plpgsql security definer set search_path = public as $$
 declare v jsonb; v_cut timestamptz; v_live boolean; n int;
 begin
-  if auth.uid() is null then raise exception 'Please sign in'; end if;
+  -- no sign-in needed: only our server can produce the signed quote (api/tick.ts runs this every minute)
   v := fg_verify_quote(p_quote, p_event_id, 30);
   v_cut := to_timestamp((v->>'at')::double precision / 1000) - interval '60 seconds';
   v_live := v->>'state' = 'in';
@@ -578,6 +576,29 @@ begin
   where event_id = p_event_id and status = 'open' and cashout_requested_at <= v_cut;
   return n;
 end $$;
+
+-- What the every-minute job (api/tick.ts) should look at: live bets/cash outs past their 60s wait,
+-- and started real matches that still have open bets or challenges.
+create or replace function public.fg_due_events()
+returns table (id text, start_time timestamptz, needs_confirm boolean, needs_settle boolean)
+language sql stable security definer set search_path = public as $$
+  select e.id, e.start_time,
+    exists (select 1 from fg_bets b where b.event_id = e.id
+            and ((b.status = 'pending' and b.created_at <= now() - interval '60 seconds')
+              or (b.status = 'open' and b.cashout_requested_at <= now() - interval '60 seconds'))) as needs_confirm,
+    e.start_time <= now() - interval '80 minutes'
+      and (exists (select 1 from fg_bets b where b.event_id = e.id and b.status in ('open', 'pending'))
+        or exists (select 1 from fg_challenges c where c.event_id = e.id and c.status in ('open', 'matched'))) as needs_settle
+  from fg_events e
+  where e.group_id is null and e.settled_at is null and e.start_time <= now()
+    and exists (select 1 from fg_bets b where b.event_id = e.id and (b.status = 'pending' or b.cashout_requested_at is not null)
+                union all
+                select 1 from fg_bets b where b.event_id = e.id and b.status = 'open' and e.start_time <= now() - interval '80 minutes'
+                union all
+                select 1 from fg_challenges c where c.event_id = e.id and c.status in ('open', 'matched') and e.start_time <= now() - interval '80 minutes')
+  order by e.start_time
+  limit 50;
+$$;
 
 -- ---------------------------------------------------------------- admin tools
 create or replace function public.fg_create_custom_event(
@@ -676,5 +697,15 @@ grant execute on function public.fg_is_super(), public.fg_is_member(uuid), publi
   public.fg_adjust_balance(uuid, uuid, numeric), public.fg_set_member_role(uuid, uuid, text),
   public.fg_set_live_betting(uuid, boolean), public.fg_request_cashout(uuid, jsonb), public.fg_confirm_pending(text, jsonb) to authenticated;
 grant execute on function public.fg_username_taken(text) to anon, authenticated;
+-- the every-minute job calls these without signing in; each requires a server-signed quote
+grant execute on function public.fg_due_events(), public.fg_confirm_pending(text, jsonb), public.fg_settle_event(text, text, text, text, jsonb) to anon;
 revoke all on function public.fg_sign_up(text, text) from public;
 grant execute on function public.fg_sign_up(text, text) to anon, authenticated;
+
+-- ---------------------------------------------------------------- every-minute job
+-- Confirms live bets/cash outs and settles finished matches even when nobody has the app open.
+-- Replace the URL with your own deployment, then run once:
+--   create extension if not exists pg_net;
+--   create extension if not exists pg_cron;
+--   select cron.schedule('friendly-games-tick', '* * * * *',
+--     $job$ select net.http_get(url := 'https://YOUR-SITE.vercel.app/api/tick', timeout_milliseconds := 25000) $job$);

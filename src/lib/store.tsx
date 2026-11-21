@@ -43,6 +43,9 @@ interface Ctx {
   setOddsFormat(f: OddsFormat): void;
   toasts: Toast[];
   toast(text: string, kind?: Toast['kind']): void;
+  /** Site-wide house commission on winnings (0.05 = 5%). */
+  commissionRate: number;
+  setCommissionRate(rate: number): Promise<void>;
   /** Report matches seen in the live feed so finished ones get settled. */
   reportMatches(ms: Match[]): void;
 }
@@ -75,6 +78,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [slipOpen, setSlipOpen] = useState(false);
   const [oddsFormat, setOddsFormatState] = useState<OddsFormat>((lsGet('fg-odds') as OddsFormat) || 'decimal');
   const [toasts, setToasts] = useState<Toast[]>([]);
+  const [commissionRate, setCommissionRateState] = useState(0.05);
   const settling = useRef(new Set<string>());
   const confirming = useRef(new Set<string>());
   const dataRef = useRef<GroupData | null>(null);
@@ -89,6 +93,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const loadUser = useCallback(async () => {
     const u = await backend.currentUser().catch(() => null);
     setUser(u);
+    if (u) backend.commissionRate().then(setCommissionRateState, () => {});
     if (u) {
       const gs = await backend.myGroups().catch(() => []);
       setGroups(gs);
@@ -270,6 +275,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
     },
     toasts,
     toast,
+    commissionRate,
+    setCommissionRate: async (rate: number) => {
+      setCommissionRateState(await backend.setCommissionRate(rate));
+    },
     reportMatches,
   };
   return <AppCtx.Provider value={value}>{children}</AppCtx.Provider>;

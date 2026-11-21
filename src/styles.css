@@ -440,3 +440,4 @@ textarea.input { height: auto; padding: 10px 12px; resize: vertical; }
 .co-value { text-align: center; margin: 14px 0 6px; padding: 14px; border-radius: 12px; background: rgba(168,85,247,.08); border: 1px solid rgba(168,85,247,.3); }
 .co-amount { font-size: 30px; font-weight: 900; margin: 4px 0; display: flex; justify-content: center; }
 .co-amount .coin { width: 24px; height: 24px; }
+.co-row b { white-space: nowrap; }

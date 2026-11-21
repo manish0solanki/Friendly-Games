@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import { useApp } from '../lib/store';
-import { fmtCoins } from '../lib/odds';
+import { fmtCoins, pct } from '../lib/odds';
 import { ago, eventPath, kickoff, pickLabel } from '../lib/util';
 import type { Result, StoredEvent } from '../lib/types';
 import { Avatar, Coins, Empty, Modal } from '../components/bits';
@@ -13,7 +13,7 @@ export function inviteLink(code: string): string {
 }
 
 export function GroupPage() {
-  const { data, user, group, backend, refresh, refreshGroups, toast } = useApp();
+  const { data, user, group, backend, refresh, refreshGroups, toast, commissionRate } = useApp();
   const [params, setParams] = useSearchParams();
   const [adjust, setAdjust] = useState<{ userId: string; username: string } | null>(null);
   const [eventOpen, setEventOpen] = useState(false);
@@ -131,6 +131,21 @@ export function GroupPage() {
                   }
                 }}
               />
+            </div>
+          </div>
+
+          <div className="card card-pad" style={{ marginBottom: 16 }}>
+            <div className="row" style={{ alignItems: 'center' }}>
+              <div style={{ flex: 1 }}>
+                <div style={{ fontWeight: 800 }}>🏦 House</div>
+                <div className="muted" style={{ fontSize: 13, marginTop: 4 }}>
+                  {pct(commissionRate)} commission on winnings (bets, challenges and cash outs above the stake). Losing bets and refunds pay nothing.
+                </div>
+              </div>
+              <div style={{ textAlign: 'right' }}>
+                <Coins n={data.house.reduce((a, h) => a + h.amount, 0)} />
+                <div className="dim" style={{ fontSize: 12 }}>collected in this group</div>
+              </div>
             </div>
           </div>
 

@@ -4,7 +4,7 @@
  * on one device by switching players) before setting up the free online database.
  */
 import { computeLine, OUTCOME_INDEX, stakesFor, takerStake } from '../odds';
-import type { AdminOverview, Bet, Challenge, CustomEventInput, Group, GroupData, Match, Member, Outcome, Profile, Result, StoredEvent } from '../types';
+import type { AdminOverview, Bet, Challenge, HouseEntry, CustomEventInput, Group, GroupData, Match, Member, Outcome, Profile, Result, StoredEvent } from '../types';
 import type { Quote } from '../quote';
 import { cleanUsername, matchToStored, validateUsername, type Backend } from './types';
 
@@ -16,6 +16,8 @@ interface DB {
   events: Record<string, StoredEvent>;
   bets: Bet[];
   challenges: Challenge[];
+  house?: HouseEntry[];
+  commissionRate?: number;
 }
 
 const KEY = 'friendly-games-demo-v1';
@@ -144,7 +146,8 @@ export class LocalBackend implements Backend {
     for (const e of Object.values(this.db.events)) if (e.groupId === groupId) events[e.id] = e;
     for (const x of [...bets, ...challenges]) if (this.db.events[x.eventId]) events[x.eventId] = this.db.events[x.eventId];
     const members = this.db.members.filter((m) => m.groupId === groupId).map(({ groupId: _g, ...m }) => m);
-    return structuredClone({ group, members, bets, challenges, events });
+    const house = (this.db.house ?? []).filter((h) => h.groupId === groupId);
+    return structuredClone({ group, members, bets, challenges, events, house });
   }
 
   async placeBet(groupId: string, match: Match, pick: Outcome, stake: number): Promise<{ odds: number; pending: boolean }> {
@@ -159,7 +162,7 @@ export class LocalBackend implements Backend {
     const line = computeLine(e.baseProbs, e.allowDraw, stakesFor(this.db.bets.filter((b) => b.groupId === groupId), e.id));
     this.db.bets.push({
       id: uid(), groupId, userId: me.id, eventId: e.id, pick, stake, odds: line[OUTCOME_INDEX[pick]],
-      status: 'open', payout: 0, createdAt: new Date().toISOString(),
+      status: 'open', payout: 0, createdAt: new Date().toISOString(), commissionRate: this.rate(),
     });
     m.balance = r2(m.balance - stake);
     this.save();
@@ -181,6 +184,7 @@ export class LocalBackend implements Backend {
     this.db.challenges.push({
       id: uid(), groupId, eventId: e.id, creatorId: me.id, pick, odds, stake, takerStake: Math.max(0.01, takerStake(stake, odds)),
       targetId, takerId: null, status: 'open', message: message.trim().slice(0, 140) || null, createdAt: new Date().toISOString(),
+      commissionRate: this.rate(),
     });
     m.balance = r2(m.balance - stake);
     this.save();
@@ -244,7 +248,11 @@ export class LocalBackend implements Backend {
     for (const b of this.db.bets) {
       if (b.eventId !== eventId || b.status !== 'open') continue;
       if (result === 'void') Object.assign(b, { status: 'void', payout: b.stake });
-      else if (b.pick === result) Object.assign(b, { status: 'won', payout: r2(b.stake * b.odds) });
+      else if (b.pick === result) {
+        const commission = r2((b.stake * b.odds - b.stake) * (b.commissionRate ?? 0));
+        Object.assign(b, { status: 'won', payout: r2(b.stake * b.odds) - commission, commission });
+        if (commission > 0) this.houseAdd(b.groupId, b.userId, 'bet', b.id, eventId, commission);
+      }
       else Object.assign(b, { status: 'lost', payout: 0 });
       b.settledAt = now;
       credit(b.groupId, b.userId, b.payout);
@@ -261,7 +269,10 @@ export class LocalBackend implements Backend {
           Object.assign(c, { status: 'void', settledAt: now });
         } else {
           const winner = c.pick === result ? c.creatorId : c.takerId;
-          credit(c.groupId, winner, r2(c.stake + c.takerStake));
+          const commission = r2((winner === c.creatorId ? c.takerStake : c.stake) * (c.commissionRate ?? 0));
+          c.commission = commission;
+          if (commission > 0) this.houseAdd(c.groupId, winner ?? null, 'challenge', c.id, eventId, commission);
+          credit(c.groupId, winner, r2(c.stake + c.takerStake - commission));
           Object.assign(c, { status: 'settled', winnerId: winner, settledAt: now });
         }
       }
@@ -318,7 +329,24 @@ export class LocalBackend implements Backend {
       bets: this.db.bets,
       challenges: this.db.challenges,
       events: this.db.events,
+      house: this.db.house ?? [],
     });
+  }
+
+  private rate() {
+    return this.db.commissionRate ?? 0.05;
+  }
+  private houseAdd(groupId: string, userId: string | null, source: HouseEntry['source'], refId: string, eventId: string, amount: number) {
+    (this.db.house ??= []).push({ id: uid(), groupId, userId, source, refId, eventId, amount, createdAt: new Date().toISOString() });
+  }
+  async commissionRate() {
+    return this.rate();
+  }
+  async setCommissionRate(rate: number) {
+    if (!(rate >= 0 && rate <= 0.5)) throw new Error('Commission must be between 0% and 50%');
+    this.db.commissionRate = Math.round(rate * 10000) / 10000;
+    this.save();
+    return this.rate();
   }
 
   /** Demo helper: list players on this device for quick switching. */

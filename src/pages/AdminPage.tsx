@@ -1,17 +1,18 @@
 import { Fragment, useCallback, useEffect, useMemo, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { useApp } from '../lib/store';
-import { fmtCoins, formatOdds } from '../lib/odds';
+import { fmtCoins, formatOdds, pct } from '../lib/odds';
 import { sportIcon } from '../lib/sports';
 import { ago, eventPath, kickoff, pickLabel } from '../lib/util';
 import type { AdminOverview, Bet } from '../lib/types';
 import { Avatar, Coins, Empty } from '../components/bits';
 
-type Tab = 'players' | 'bets' | 'challenges' | 'groups';
+type Tab = 'players' | 'bets' | 'challenges' | 'groups' | 'house';
 
 /** Site-admin dashboard: every player, group, bet and challenge across the whole site. */
 export function AdminPage() {
-  const { backend, user, setGroupId, oddsFormat, toast } = useApp();
+  const { backend, user, setGroupId, oddsFormat, toast, commissionRate, setCommissionRate } = useApp();
+  const [rateInput, setRateInput] = useState('');
   const nav = useNavigate();
   const [data, setData] = useState<AdminOverview | null>(null);
   const [tab, setTab] = useState<Tab>('players');
@@ -150,6 +151,12 @@ export function AdminPage() {
           <div className="v num">{openBets.length}</div>
         </div>
         <div className="card stat">
+          <div className="k">House earnings</div>
+          <div className="v">
+            <Coins n={data.house.reduce((a, h) => a + h.amount, 0)} />
+          </div>
+        </div>
+        <div className="card stat">
           <div className="k">Coins in play</div>
           <div className="v">
             <Coins n={inPlay} />
@@ -158,11 +165,19 @@ export function AdminPage() {
       </div>
 
       <div className="tabs">
-        {(['players', 'bets', 'challenges', 'groups'] as Tab[]).map((t) => (
+        {(['players', 'bets', 'challenges', 'groups', 'house'] as Tab[]).map((t) => (
           <button key={t} className={`tab ${tab === t ? 'active' : ''}`} onClick={() => setTab(t)}>
             {t[0].toUpperCase() + t.slice(1)}{' '}
             <span className="dim">
-              {t === 'players' ? data.players.length : t === 'bets' ? data.bets.length : t === 'challenges' ? data.challenges.length : data.groups.length}
+              {t === 'players'
+                ? data.players.length
+                : t === 'bets'
+                  ? data.bets.length
+                  : t === 'challenges'
+                    ? data.challenges.length
+                    : t === 'groups'
+                      ? data.groups.length
+                      : data.house.length}
             </span>
           </button>
         ))}
@@ -319,6 +334,98 @@ export function AdminPage() {
             <Empty icon="⚔️" title="No challenges yet" />
           )}
         </div>
+      )}
+
+      {tab === 'house' && (
+        <>
+          <div className="grid-2" style={{ marginBottom: 16 }}>
+            <div className="card card-pad">
+              <div style={{ fontWeight: 800, marginBottom: 4 }}>🏦 Commission rate</div>
+              <div className="muted" style={{ fontSize: 13, marginBottom: 12 }}>
+                Taken from the profit on winning bets, challenges and cash outs above the stake. Each bet keeps the rate it was placed at.
+              </div>
+              <div className="row">
+                <input
+                  className="input num"
+                  style={{ maxWidth: 110 }}
+                  inputMode="decimal"
+                  placeholder={String(Math.round(commissionRate * 1000) / 10)}
+                  value={rateInput}
+                  onChange={(e) => setRateInput(e.target.value.replace(/[^0-9.]/g, ''))}
+                />
+                <span className="muted">%</span>
+                <button
+                  className="btn primary sm"
+                  disabled={rateInput === ''}
+                  onClick={async () => {
+                    try {
+                      await setCommissionRate(parseFloat(rateInput) / 100);
+                      setRateInput('');
+                      toast(`Commission set to ${rateInput}% for new bets`);
+                    } catch (e: any) {
+                      toast(e.message, 'error');
+                    }
+                  }}
+                >
+                  Save
+                </button>
+                <span className="spacer" />
+                <b>Now: {pct(commissionRate)}</b>
+              </div>
+            </div>
+            <div className="card card-pad">
+              <div style={{ fontWeight: 800, marginBottom: 8 }}>By group</div>
+              {data.groups.map((g) => {
+                const sum = data.house.filter((h) => h.groupId === g.id).reduce((a, h) => a + h.amount, 0);
+                return (
+                  <div key={g.id} className="row" style={{ padding: '4px 0' }}>
+                    <span>{g.name}</span>
+                    <span className="spacer" />
+                    <Coins n={sum} />
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+          <div className="card" style={{ overflowX: 'auto' }}>
+            {data.house.length ? (
+              <table className="table">
+                <thead>
+                  <tr>
+                    <th>When</th>
+                    <th>Paid by</th>
+                    <th className="hide-mobile">Group</th>
+                    <th>From</th>
+                    <th className="r">Commission</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {data.house.map((h) => {
+                    const ev = h.eventId ? data.events[h.eventId] : undefined;
+                    return (
+                      <tr key={h.id}>
+                        <td className="dim" style={{ whiteSpace: 'nowrap' }}>{ago(h.createdAt)}</td>
+                        <td>
+                          <b>{name(h.userId)}</b>
+                        </td>
+                        <td className="hide-mobile dim">{gname(h.groupId)}</td>
+                        <td>
+                          <span className="pill">{h.source === 'bet' ? 'winning bet' : h.source === 'challenge' ? 'challenge' : 'cash out'}</span>{' '}
+                          {ev && <span className="dim">{ev.name}</span>}
+                        </td>
+                        <td className="r num pos">+{fmtCoins(h.amount)}</td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            ) : (
+              <Empty icon="🏦" title="No commission yet">
+                Commission is collected when bets placed from now on are won or cashed out at a profit.
+              </Empty>
+            )}
+          </div>
+        </>
       )}
 
       {tab === 'groups' && (

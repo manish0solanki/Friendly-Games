@@ -86,6 +86,19 @@ function gcd(a: number, b: number): number {
   return b ? gcd(b, a % b) : Math.abs(a);
 }
 
+/** What a winning bet pays back after the house takes its commission on the profit. */
+export function netReturn(stake: number, odds: number, rate: number): number {
+  const gross = stake * odds;
+  return Math.round((gross - (gross - stake) * rate) * 100) / 100;
+}
+
+/** Commission on a profit (rounded like the database does). */
+export function commissionOn(profit: number, rate: number): number {
+  return profit > 0 ? Math.round(profit * rate * 100) / 100 : 0;
+}
+
+export const pct = (rate: number) => `${Math.round(rate * 1000) / 10}%`;
+
 /** For a head-to-head challenge: what the friend accepting must risk. */
 export function takerStake(stake: number, odds: number): number {
   return Math.round(stake * (odds - 1) * 100) / 100;

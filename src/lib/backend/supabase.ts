@@ -1,7 +1,7 @@
 import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 import { SUPABASE_ANON_KEY, SUPABASE_URL } from '../config';
 import { quoteArg, type Quote } from '../quote';
-import type { AdminOverview, Bet, Challenge, Group, GroupData, Member, StoredEvent } from '../types';
+import type { AdminOverview, Bet, Challenge, Group, GroupData, HouseEntry, Member, StoredEvent } from '../types';
 import { cleanUsername, matchToStored, validateUsername, type Backend } from './types';
 
 // Players sign in with a username; Supabase Auth needs an email, so we derive a private one.
@@ -42,6 +42,8 @@ const mapBet = (x: any): Bet => ({
   payout: Number(x.payout),
   createdAt: x.created_at,
   settledAt: x.settled_at,
+  commissionRate: Number(x.commission_rate ?? 0),
+  commission: Number(x.commission ?? 0),
   live: !!x.live,
   cashoutValue: x.cashout_value == null ? null : Number(x.cashout_value),
   cashoutRequestedAt: x.cashout_requested_at,
@@ -64,6 +66,19 @@ const mapChallenge = (x: any): Challenge => ({
   createdAt: x.created_at,
   matchedAt: x.matched_at,
   settledAt: x.settled_at,
+  commissionRate: Number(x.commission_rate ?? 0),
+  commission: Number(x.commission ?? 0),
+});
+
+const mapHouse = (x: any): HouseEntry => ({
+  id: x.id,
+  groupId: x.group_id,
+  userId: x.user_id,
+  source: x.source,
+  refId: x.ref_id,
+  eventId: x.event_id,
+  amount: Number(x.amount),
+  createdAt: x.created_at,
 });
 
 const mapMember = (x: any): Member => ({
@@ -160,14 +175,15 @@ export class SupabaseBackend implements Backend {
   }
 
   async groupData(groupId: string): Promise<GroupData> {
-    const [g, m, b, c, ce] = await Promise.all([
+    const [g, m, b, c, ce, h] = await Promise.all([
       this.sb.from('fg_groups').select('*').eq('id', groupId).single(),
       this.sb.from('fg_members').select('*, fg_profiles(username)').eq('group_id', groupId),
       this.sb.from('fg_bets').select('*').eq('group_id', groupId).order('created_at', { ascending: false }).limit(2000),
       this.sb.from('fg_challenges').select('*').eq('group_id', groupId).order('created_at', { ascending: false }).limit(1000),
       this.sb.from('fg_events').select('*').eq('group_id', groupId),
+      this.sb.from('fg_house_ledger').select('*').eq('group_id', groupId).order('created_at', { ascending: false }).limit(1000),
     ]);
-    for (const r of [g, m, b, c, ce]) err(r.error);
+    for (const r of [g, m, b, c, ce, h]) err(r.error);
 
     const bets: Bet[] = (b.data ?? []).map(mapBet);
     const challenges: Challenge[] = (c.data ?? []).map(mapChallenge);
@@ -176,7 +192,7 @@ export class SupabaseBackend implements Backend {
     const events: Record<string, StoredEvent> = {};
     for (const e of ce.data ?? []) events[e.id] = mapEvent(e);
     await this.loadEvents(events, [...bets.map((x) => x.eventId), ...challenges.map((x) => x.eventId)]);
-    return { group: mapGroup(g.data), members, bets, challenges, events };
+    return { group: mapGroup(g.data), members, bets, challenges, events, house: (h.data ?? []).map(mapHouse) };
   }
 
   private async loadEvents(into: Record<string, StoredEvent>, ids: string[]) {
@@ -190,14 +206,15 @@ export class SupabaseBackend implements Backend {
 
   /** Site admins only (row-level security returns everything for them, and only their own groups for others). */
   async adminOverview(): Promise<AdminOverview> {
-    const [p, g, m, b, c] = await Promise.all([
+    const [p, g, m, b, c, h] = await Promise.all([
       this.sb.from('fg_profiles').select('id, username, created_at, is_super').order('created_at'),
       this.sb.from('fg_groups').select('*').order('created_at'),
       this.sb.from('fg_members').select('*, fg_profiles(username)'),
       this.sb.from('fg_bets').select('*').order('created_at', { ascending: false }).limit(1000),
       this.sb.from('fg_challenges').select('*').order('created_at', { ascending: false }).limit(500),
+      this.sb.from('fg_house_ledger').select('*').order('created_at', { ascending: false }).limit(2000),
     ]);
-    for (const r of [p, g, m, b, c]) err(r.error);
+    for (const r of [p, g, m, b, c, h]) err(r.error);
     const bets = (b.data ?? []).map(mapBet);
     const challenges = (c.data ?? []).map(mapChallenge);
     const events: Record<string, StoredEvent> = {};
@@ -209,7 +226,19 @@ export class SupabaseBackend implements Backend {
       bets,
       challenges,
       events,
+      house: (h.data ?? []).map(mapHouse),
     };
+  }
+
+  async commissionRate() {
+    const { data } = await this.sb.from('fg_settings').select('commission_rate').maybeSingle();
+    return data ? Number(data.commission_rate) : 0.05;
+  }
+
+  async setCommissionRate(rate: number) {
+    const { data, error } = await this.sb.rpc('fg_set_commission_rate', { p_rate: rate });
+    err(error);
+    return Number(data);
   }
 
   async placeBet(groupId: string, match: any, pick: any, stake: number, quote?: Quote) {

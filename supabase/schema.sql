@@ -109,6 +109,30 @@ alter table public.fg_bets drop constraint if exists fg_bets_status_check;
 alter table public.fg_bets add constraint fg_bets_status_check check (status in ('pending','open','won','lost','void','cashed'));
 create index if not exists fg_bets_pending_idx on public.fg_bets (event_id) where status = 'pending' or cashout_requested_at is not null;
 
+-- house commission (virtual coins): 5% of the profit on winning bets, challenges and cash outs
+create table if not exists public.fg_settings (
+  id boolean primary key default true check (id),
+  commission_rate numeric(5,4) not null default 0.05 check (commission_rate between 0 and 0.5),
+  updated_at timestamptz not null default now()
+);
+insert into public.fg_settings (id) values (true) on conflict do nothing;
+create table if not exists public.fg_house_ledger (
+  id uuid primary key default gen_random_uuid(),
+  group_id uuid not null references public.fg_groups on delete cascade,
+  user_id uuid references public.fg_profiles on delete set null,
+  source text not null check (source in ('bet', 'challenge', 'cashout')),
+  ref_id uuid,
+  event_id text,
+  amount numeric(12,2) not null,
+  created_at timestamptz not null default now()
+);
+create index if not exists fg_house_ledger_group_idx on public.fg_house_ledger (group_id, created_at desc);
+-- existing bets/challenges keep 0%: the rate is locked in when a bet is placed
+alter table public.fg_bets add column if not exists commission_rate numeric(5,4) not null default 0;
+alter table public.fg_bets add column if not exists commission numeric(12,2) not null default 0;
+alter table public.fg_challenges add column if not exists commission_rate numeric(5,4) not null default 0;
+alter table public.fg_challenges add column if not exists commission numeric(12,2) not null default 0;
+
 create index if not exists fg_challenges_group_idx on public.fg_challenges (group_id, created_at desc);
 create index if not exists fg_challenges_event_idx on public.fg_challenges (event_id) where status in ('open','matched');
 
@@ -247,6 +271,25 @@ begin
   returning * into e;
   if e.id is null then select * into e from fg_events where id = v_id; end if;
   return e;
+end $$;
+
+-- ---------------------------------------------------------------- house commission
+create or replace function public.fg_commission_rate()
+returns numeric language sql stable security definer set search_path = public as $$
+  select coalesce((select commission_rate from fg_settings where id), 0.05);
+$$;
+
+-- new bets and challenges lock in the current site-wide rate
+alter table public.fg_bets alter column commission_rate set default public.fg_commission_rate();
+alter table public.fg_challenges alter column commission_rate set default public.fg_commission_rate();
+
+create or replace function public.fg_set_commission_rate(p_rate numeric)
+returns numeric language plpgsql security definer set search_path = public as $$
+begin
+  if not fg_is_super() then raise exception 'Only the site admin can change the commission'; end if;
+  if p_rate is null or p_rate < 0 or p_rate > 0.5 then raise exception 'Commission must be between 0%% and 50%%'; end if;
+  update fg_settings set commission_rate = round(p_rate, 4), updated_at = now() where id;
+  return fg_commission_rate();
 end $$;
 
 -- ---------------------------------------------------------------- groups
@@ -428,45 +471,59 @@ begin
   if p_result = 'draw' and not e.allow_draw then p_result := 'void'; end if;
 
   -- 1) straight bets against the group line
-  update fg_members gm set balance = gm.balance + x.amt
-  from (
-    select group_id, user_id,
-           sum(case when status = 'pending' or p_result = 'void' then stake when pick = p_result then round(stake * odds, 2) else 0 end) amt
-    from fg_bets where event_id = p_event_id and status in ('open', 'pending') group by group_id, user_id
-  ) x
-  where gm.group_id = x.group_id and gm.user_id = x.user_id and x.amt > 0;
-
-  update fg_bets set
-    status = case when status = 'pending' or p_result = 'void' then 'void' when pick = p_result then 'won' else 'lost' end,
-    payout = case when status = 'pending' or p_result = 'void' then stake when pick = p_result then round(stake * odds, 2) else 0 end,
-    cashout_value = null, cashout_requested_at = null, cashout_score = null,
-    settled_at = now()
-  where event_id = p_event_id and status in ('open', 'pending');
+  -- winners pay the house commission on their profit (rate locked in when the bet was placed)
+  with settled as (
+    update fg_bets set
+      status = case when status = 'pending' or p_result = 'void' then 'void' when pick = p_result then 'won' else 'lost' end,
+      commission = case when status <> 'pending' and p_result <> 'void' and pick = p_result
+                        then round((stake * odds - stake) * commission_rate, 2) else 0 end,
+      payout = case when status = 'pending' or p_result = 'void' then stake
+                    when pick = p_result then round(stake * odds, 2) - round((stake * odds - stake) * commission_rate, 2)
+                    else 0 end,
+      cashout_value = null, cashout_requested_at = null, cashout_score = null,
+      settled_at = now()
+    where event_id = p_event_id and status in ('open', 'pending')
+    returning id, group_id, user_id, payout, commission
+  ), credit as (
+    update fg_members gm set balance = gm.balance + x.amt
+    from (select group_id, user_id, sum(payout) amt from settled group by group_id, user_id) x
+    where gm.group_id = x.group_id and gm.user_id = x.user_id and x.amt > 0
+    returning 1
+  )
+  insert into fg_house_ledger (group_id, user_id, source, ref_id, event_id, amount)
+  select group_id, user_id, 'bet', id, p_event_id, commission from settled where commission > 0;
 
   -- 2) head-to-head challenges
+  -- unmatched challenges are refunded to the creator
   update fg_members gm set balance = gm.balance + x.amt
-  from (
-    select group_id, user_id, sum(amt) amt from (
-      -- unmatched challenges are refunded to the creator
-      select group_id, creator_id user_id, stake amt from fg_challenges where event_id = p_event_id and status = 'open'
-      union all
-      -- matched: creator collects everything if their pick wins
-      select group_id, creator_id, case when p_result = 'void' then stake when pick = p_result then stake + taker_stake else 0 end
-        from fg_challenges where event_id = p_event_id and status = 'matched'
-      union all
-      -- matched: taker collects everything if the pick loses
-      select group_id, taker_id, case when p_result = 'void' then taker_stake when pick <> p_result then stake + taker_stake else 0 end
-        from fg_challenges where event_id = p_event_id and status = 'matched'
-    ) t group by group_id, user_id
-  ) x
-  where gm.group_id = x.group_id and gm.user_id = x.user_id and x.amt > 0;
-
+  from (select group_id, creator_id user_id, sum(stake) amt from fg_challenges
+        where event_id = p_event_id and status = 'open' group by group_id, creator_id) x
+  where gm.group_id = x.group_id and gm.user_id = x.user_id;
   update fg_challenges set status = 'cancelled', settled_at = now() where event_id = p_event_id and status = 'open';
-  update fg_challenges set
-    status = case when p_result = 'void' then 'void' else 'settled' end,
-    winner_id = case when p_result = 'void' then null when pick = p_result then creator_id else taker_id end,
-    settled_at = now()
-  where event_id = p_event_id and status = 'matched';
+
+  -- matched: the winner takes the pot minus commission on their profit (the loser's stake)
+  with done as (
+    update fg_challenges set
+      status = case when p_result = 'void' then 'void' else 'settled' end,
+      winner_id = case when p_result = 'void' then null when pick = p_result then creator_id else taker_id end,
+      commission = case when p_result = 'void' then 0
+                        when pick = p_result then round(taker_stake * commission_rate, 2)
+                        else round(stake * commission_rate, 2) end,
+      settled_at = now()
+    where event_id = p_event_id and status = 'matched'
+    returning id, group_id, creator_id, taker_id, winner_id, stake, taker_stake, status, commission
+  ), credits as (
+    select group_id, creator_id user_id, stake amt from done where status = 'void'
+    union all select group_id, taker_id, taker_stake from done where status = 'void'
+    union all select group_id, winner_id, stake + taker_stake - commission from done where status = 'settled'
+  ), credit as (
+    update fg_members gm set balance = gm.balance + x.amt
+    from (select group_id, user_id, sum(amt) amt from credits group by group_id, user_id) x
+    where gm.group_id = x.group_id and gm.user_id = x.user_id and x.amt > 0
+    returning 1
+  )
+  insert into fg_house_ledger (group_id, user_id, source, ref_id, event_id, amount)
+  select group_id, winner_id, 'challenge', id, p_event_id, commission from done where commission > 0;
 
   update fg_events set result = p_result, home_score = p_home_score, away_score = p_away_score,
                     settled_at = now(), settled_by = auth.uid()
@@ -565,13 +622,22 @@ begin
   update fg_bets set status = 'void', payout = stake, settled_at = now()
   where event_id = p_event_id and status = 'pending' and created_at <= v_cut;
 
-  update fg_members gm set balance = gm.balance + x.amt
-  from (select group_id, user_id, sum(cashout_value) amt from fg_bets
-        where event_id = p_event_id and status = 'open' and cashout_requested_at <= v_cut and v_live and cashout_score = v->>'score'
-        group by group_id, user_id) x
-  where gm.group_id = x.group_id and gm.user_id = x.user_id;
-  update fg_bets set status = 'cashed', payout = cashout_value, settled_at = now()
-  where event_id = p_event_id and status = 'open' and cashout_requested_at <= v_cut and v_live and cashout_score = v->>'score';
+  -- cash outs: commission only on the amount above the stake
+  with cashed as (
+    update fg_bets set status = 'cashed',
+      commission = case when cashout_value > stake then round((cashout_value - stake) * commission_rate, 2) else 0 end,
+      payout = cashout_value - case when cashout_value > stake then round((cashout_value - stake) * commission_rate, 2) else 0 end,
+      settled_at = now()
+    where event_id = p_event_id and status = 'open' and cashout_requested_at <= v_cut and v_live and cashout_score = v->>'score'
+    returning id, group_id, user_id, payout, commission
+  ), credit as (
+    update fg_members gm set balance = gm.balance + x.amt
+    from (select group_id, user_id, sum(payout) amt from cashed group by group_id, user_id) x
+    where gm.group_id = x.group_id and gm.user_id = x.user_id
+    returning 1
+  )
+  insert into fg_house_ledger (group_id, user_id, source, ref_id, event_id, amount)
+  select group_id, user_id, 'cashout', id, p_event_id, commission from cashed where commission > 0;
   update fg_bets set cashout_value = null, cashout_requested_at = null, cashout_score = null
   where event_id = p_event_id and status = 'open' and cashout_requested_at <= v_cut;
   return n;
@@ -655,6 +721,13 @@ alter table public.fg_members enable row level security;
 alter table public.fg_events enable row level security;
 alter table public.fg_bets enable row level security;
 alter table public.fg_challenges enable row level security;
+alter table public.fg_settings enable row level security;
+alter table public.fg_house_ledger enable row level security;
+
+drop policy if exists "settings readable" on public.fg_settings;
+create policy "settings readable" on public.fg_settings for select to authenticated using (true);
+drop policy if exists "house ledger for members" on public.fg_house_ledger;
+create policy "house ledger for members" on public.fg_house_ledger for select to authenticated using (public.fg_is_member(group_id));
 
 drop policy if exists "fg_profiles readable" on public.fg_profiles;
 create policy "fg_profiles readable" on public.fg_profiles for select to authenticated using (true);
@@ -697,6 +770,8 @@ grant execute on function public.fg_is_super(), public.fg_is_member(uuid), publi
   public.fg_adjust_balance(uuid, uuid, numeric), public.fg_set_member_role(uuid, uuid, text),
   public.fg_set_live_betting(uuid, boolean), public.fg_request_cashout(uuid, jsonb), public.fg_confirm_pending(text, jsonb) to authenticated;
 grant execute on function public.fg_username_taken(text) to anon, authenticated;
+revoke all on function public.fg_set_commission_rate(numeric) from public, anon;
+grant execute on function public.fg_commission_rate(), public.fg_set_commission_rate(numeric) to authenticated;
 -- the every-minute job calls these without signing in; each requires a server-signed quote
 grant execute on function public.fg_due_events(), public.fg_confirm_pending(text, jsonb), public.fg_settle_event(text, text, text, text, jsonb) to anon;
 revoke all on function public.fg_sign_up(text, text) from public;

@@ -41,6 +41,9 @@ export interface Backend {
   setRole(groupId: string, userId: string, role: 'admin' | 'member'): Promise<void>;
   /** Everything across all groups — only returns full data for site admins. */
   adminOverview(): Promise<AdminOverview>;
+  /** Site-wide house commission on winnings (0.05 = 5%). */
+  commissionRate(): Promise<number>;
+  setCommissionRate(rate: number): Promise<number>;
 }
 
 export function matchToStored(m: Match): StoredEvent {

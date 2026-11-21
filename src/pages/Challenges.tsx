@@ -73,7 +73,10 @@ export function ChallengeCard({ c, compact }: { c: Challenge; compact?: boolean 
         <div className="num" style={{ fontWeight: 800 }}>
           {fmtCoins(c.stake)} <span className="dim">vs</span> {fmtCoins(c.takerStake)}
         </div>
-        <div className="sub">Pot {fmtCoins(c.stake + c.takerStake)}</div>
+        <div className="sub">
+          Pot {fmtCoins(c.stake + c.takerStake)}
+          {c.status === 'settled' && c.commission ? <> · commission {fmtCoins(c.commission)}</> : null}
+        </div>
         <div className="row" style={{ justifyContent: 'flex-end', marginTop: 6 }}>
           {canAccept && (
             <button

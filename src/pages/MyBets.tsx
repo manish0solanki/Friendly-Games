@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useApp } from '../lib/store';
-import { fmtCoins, formatOdds, OUTCOME_INDEX } from '../lib/odds';
+import { commissionOn, fmtCoins, formatOdds, netReturn, OUTCOME_INDEX, pct } from '../lib/odds';
 import { CONFIRM_SECONDS, fetchQuote, hasQuotes, type Quote } from '../lib/quote';
 import { cashOutValue, useLiveMatches } from '../lib/useLiveMatches';
 import type { Bet, StoredEvent } from '../lib/types';
@@ -46,7 +46,10 @@ function CashOutModal({ target, onClose }: { target: CashOutTarget; onClose(): v
 
   const p = quote?.payload;
   const current = p?.odds?.[OUTCOME_INDEX[bet.pick]];
-  const value = p?.state === 'in' ? cashOutValue(bet.stake, bet.odds, current) : null;
+  const rate = bet.commissionRate ?? 0;
+  const gross = p?.state === 'in' ? cashOutValue(bet.stake, bet.odds, current) : null;
+  const fee = gross ? commissionOn(gross - bet.stake, rate) : 0;
+  const value = gross ? Math.round((gross - fee) * 100) / 100 : null;
   const unavailable = p && (p.state !== 'in' || !value);
 
   async function confirmCashOut() {
@@ -56,7 +59,8 @@ function CashOutModal({ target, onClose }: { target: CashOutTarget; onClose(): v
       // prices are only valid for a few seconds, so sign a fresh one at the moment you confirm
       const q = await fetchQuote(event.id, event.startTime);
       const v = await backend.requestCashout(bet.id, q);
-      toast(`Cashing out for ${fmtCoins(v)} — confirms in ${CONFIRM_SECONDS}s if the score holds ⏱️`, 'info');
+      const net = v - commissionOn(v - bet.stake, rate);
+      toast(`Cashing out for ${fmtCoins(net)} — confirms in ${CONFIRM_SECONDS}s if the score holds ⏱️`, 'info');
       await refresh();
       onClose();
     } catch (e: any) {
@@ -91,9 +95,9 @@ function CashOutModal({ target, onClose }: { target: CashOutTarget; onClose(): v
         </b>
       </div>
       <div className="co-row">
-        <span className="muted">Stake · if it wins</span>
+        <span className="muted">Stake · if it wins{rate > 0 ? ' (after commission)' : ''}</span>
         <b className="num">
-          {fmtCoins(bet.stake)} · {fmtCoins(bet.stake * bet.odds)}
+          {fmtCoins(bet.stake)} · {fmtCoins(netReturn(bet.stake, bet.odds, rate))}
         </b>
       </div>
       <div className="co-row">
@@ -126,6 +130,11 @@ function CashOutModal({ target, onClose }: { target: CashOutTarget; onClose(): v
         </button>
       </div>
       <div className="dim" style={{ fontSize: 12, marginTop: 10, textAlign: 'center' }}>
+        {fee > 0 && (
+          <>
+            Includes {pct(rate)} house commission on the profit ({fmtCoins(fee)}).{' '}
+          </>
+        )}
         Confirms after {CONFIRM_SECONDS} seconds if the score doesn’t change. The final amount uses the price at the moment you confirm.
       </div>
     </Modal>
@@ -228,13 +237,19 @@ export function MyBets() {
                   </div>
                   <div className="sub num">
                     {b.status === 'pending' ? (
-                      <>To return {fmtCoins(b.stake * b.odds)}</>
+                      <>To return {fmtCoins(netReturn(b.stake, b.odds, b.commissionRate ?? 0))}</>
                     ) : b.status === 'open' ? (
-                      <>To return {fmtCoins(b.stake * b.odds)}</>
+                      <>To return {fmtCoins(netReturn(b.stake, b.odds, b.commissionRate ?? 0))}</>
                     ) : b.status === 'cashed' ? (
-                      <span className={b.payout >= b.stake ? 'pos' : 'neg'}>Cashed out {fmtCoins(b.payout)}</span>
+                      <span className={b.payout >= b.stake ? 'pos' : 'neg'}>
+                        Cashed out {fmtCoins(b.payout)}
+                        {b.commission ? <span className="dim"> · commission {fmtCoins(b.commission)}</span> : null}
+                      </span>
                     ) : b.status === 'won' ? (
-                      <span className="pos">Returned {fmtCoins(b.payout)}</span>
+                      <span className="pos">
+                        Returned {fmtCoins(b.payout)}
+                        {b.commission ? <span className="dim"> · commission {fmtCoins(b.commission)}</span> : null}
+                      </span>
                     ) : b.status === 'void' ? (
                       <>Refunded {fmtCoins(b.payout)}</>
                     ) : (
@@ -243,7 +258,7 @@ export function MyBets() {
                   </div>
                   {b.status === 'open' && b.cashoutRequestedAt && (
                     <div className="sub" style={{ color: '#d8b4fe' }}>
-                      Cashing out for {fmtCoins(b.cashoutValue ?? 0)}
+                      Cashing out for {fmtCoins((b.cashoutValue ?? 0) - commissionOn((b.cashoutValue ?? 0) - b.stake, b.commissionRate ?? 0))}
                     </div>
                   )}
                   {b.status === 'open' && !b.cashoutRequestedAt && data.group.liveBetting && hasQuotes(ev.id) && !ev.settledAt && Date.parse(ev.startTime) <= Date.now() && (
@@ -251,7 +266,8 @@ export function MyBets() {
                       💸 Cash out
                       {(() => {
                         const m = live[ev.id];
-                        const v = m?.state === 'in' ? cashOutValue(b.stake, b.odds, m.liveOdds?.[OUTCOME_INDEX[b.pick]]) : null;
+                        const g = m?.state === 'in' ? cashOutValue(b.stake, b.odds, m.liveOdds?.[OUTCOME_INDEX[b.pick]]) : null;
+                        const v = g ? g - commissionOn(g - b.stake, b.commissionRate ?? 0) : null;
                         return v ? <span className="num"> ≈ {fmtCoins(v)}</span> : null;
                       })()}
                     </button>

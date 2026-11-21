@@ -84,6 +84,9 @@ export interface Bet {
   /** A cash out waiting for its 30s confirmation. */
   cashoutValue?: number | null;
   cashoutRequestedAt?: string | null;
+  /** House commission rate locked in when placed, and the amount paid on settlement. */
+  commissionRate?: number;
+  commission?: number;
 }
 
 export type ChallengeStatus = 'open' | 'matched' | 'settled' | 'void' | 'cancelled';
@@ -105,6 +108,20 @@ export interface Challenge {
   createdAt: string;
   matchedAt?: string | null;
   settledAt?: string | null;
+  commissionRate?: number;
+  commission?: number;
+}
+
+/** One commission payment to the house. */
+export interface HouseEntry {
+  id: string;
+  groupId: string;
+  userId: string | null;
+  source: 'bet' | 'challenge' | 'cashout';
+  refId: string | null;
+  eventId: string | null;
+  amount: number;
+  createdAt: string;
 }
 
 /** Snapshot of an event as stored in the database (what bets reference). */
@@ -130,6 +147,7 @@ export interface GroupData {
   bets: Bet[];
   challenges: Challenge[];
   events: Record<string, StoredEvent>;
+  house: HouseEntry[];
 }
 
 export interface CustomEventInput {
@@ -148,4 +166,5 @@ export interface AdminOverview {
   bets: Bet[];
   challenges: Challenge[];
   events: Record<string, StoredEvent>;
+  house: HouseEntry[];
 }

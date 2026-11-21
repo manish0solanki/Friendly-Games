@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { useApp } from '../lib/store';
-import { fmtCoins, formatOdds, OUTCOME_INDEX, takerStake } from '../lib/odds';
+import { commissionOn, fmtCoins, formatOdds, netReturn, OUTCOME_INDEX, pct, takerStake } from '../lib/odds';
 import { lineFor, pickLabel } from '../lib/util';
 import type { Match, Outcome } from '../lib/types';
 import { Coins, Modal } from './bits';
@@ -9,7 +9,7 @@ import { useLiveMatches } from '../lib/useLiveMatches';
 import { outcomesFor } from './MatchList';
 
 export function BetSlip({ onClose }: { onClose?: () => void }) {
-  const { slip, data, user, oddsFormat, updateStake, removeSelection, clearSlip, backend, group, refresh, toast } = useApp();
+  const { slip, data, user, oddsFormat, updateStake, removeSelection, clearSlip, backend, group, refresh, toast, commissionRate } = useApp();
   const [busy, setBusy] = useState(false);
   const [challenge, setChallenge] = useState<{ match: Match; pick: Outcome } | null>(null);
   const me = data?.members.find((m) => m.userId === user?.id);
@@ -21,7 +21,7 @@ export function BetSlip({ onClose }: { onClose?: () => void }) {
     const s = { ...s0, match: live[s0.match.id] ? { ...live[s0.match.id], baseProbs: s0.match.baseProbs } : s0.match };
     const odds = lineFor(s.match, data)[OUTCOME_INDEX[s.pick]];
     const stake = parseFloat(s.stake) || 0;
-    return { ...s, odds, stakeN: stake, returns: stake * odds };
+    return { ...s, odds, stakeN: stake, returns: stake > 0 ? netReturn(stake, odds, commissionRate) : 0 };
   });
   const total = items.reduce((a, x) => a + x.stakeN, 0);
   const totalReturns = items.reduce((a, x) => a + x.returns, 0);
@@ -137,7 +137,7 @@ export function BetSlip({ onClose }: { onClose?: () => void }) {
                 <button onClick={() => updateStake(it.match.id, String(Math.floor(balance)))}>Max</button>
               </div>
               <div className="returns">
-                <span>Potential return</span>
+                <span>Potential return{commissionRate > 0 ? ` (after ${pct(commissionRate)} commission)` : ''}</span>
                 <b className="num">{fmtCoins(it.returns)}</b>
               </div>
               <button className="btn ghost sm block" style={{ marginTop: 8 }} onClick={() => setChallenge({ match: it.match, pick: it.pick })}>
@@ -168,7 +168,7 @@ export function BetSlip({ onClose }: { onClose?: () => void }) {
             {busy ? 'Placing…' : `Place ${items.length > 1 ? `${items.length} bets` : 'bet'}`}
           </button>
           <div className="dim" style={{ fontSize: 11.5, marginTop: 8, textAlign: 'center' }}>
-            Odds lock in when you place. Live bets confirm after {CONFIRM_SECONDS}s if the score doesn't change. Coins only — no real money.
+            Odds lock in when you place. Winnings pay {pct(commissionRate)} commission to the house. Live bets confirm after {CONFIRM_SECONDS}s if the score doesn't change. Coins only — no real money.
           </div>
         </div>
       )}
@@ -188,7 +188,7 @@ export function ChallengeModal({
   onClose(): void;
   onDone?(): void;
 }) {
-  const { data, user, group, backend, refresh, toast, oddsFormat } = useApp();
+  const { data, user, group, backend, refresh, toast, oddsFormat, commissionRate } = useApp();
   const [pick, setPick] = useState<Outcome>(initialPick ?? 'home');
   const line = lineFor(match, data);
   const [odds, setOdds] = useState(String(line[OUTCOME_INDEX[initialPick ?? 'home']].toFixed(2)));
@@ -270,7 +270,7 @@ export function ChallengeModal({
       </div>
       <div className="card card-pad" style={{ background: 'var(--bg)', marginBottom: 12, fontSize: 13 }}>
         You put up <b>{fmtCoins(s)}</b> on <b>{pickLabel(match, pick)}</b> at <b>{o > 1 ? formatOdds(o, oddsFormat) : '—'}</b>. Your friend
-        risks <b>{fmtCoins(risk)}</b> that it doesn't happen. Winner takes <b style={{ color: 'var(--accent)' }}>{fmtCoins(s + risk)}</b>.
+        risks <b>{fmtCoins(risk)}</b> that it doesn't happen. Winner takes the <b style={{ color: 'var(--accent)' }}>{fmtCoins(s + risk)}</b> pot{commissionRate > 0 ? <>, less {pct(commissionRate)} commission on their winnings (you'd get {fmtCoins(s + risk - commissionOn(risk, commissionRate))})</> : null}.
         <div className="dim" style={{ marginTop: 6 }}>
           Current group line: {formatOdds(line[OUTCOME_INDEX[pick]], oddsFormat)}
         </div>

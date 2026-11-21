@@ -1,36 +1,41 @@
 /* Live sports data from ESPN's public (free, key-less) JSON endpoints. */
 import { findLeague } from './sports';
 import { defaultProbs, moneylineToProb } from './odds';
-import { SUPABASE_URL } from './config';
 import type { Match, MatchState, Result, StoredEvent, Team } from './types';
 
 const SITE = 'https://site.api.espn.com/apis/site/v2/sports';
 const HEADER = 'https://site.web.api.espn.com/apis/v2/scoreboard/header';
 
 const cache = new Map<string, { at: number; data: unknown }>();
-let useProxy = false;
 
-/** Fetch JSON directly from ESPN; if the browser blocks it, fall back to our tiny Supabase proxy. */
+/** Our own relay (Vercel function at /api/espn) — avoids browser CORS blocks. Not available in `vite dev`. */
+const RELAY = import.meta.env.DEV ? null : `${location.origin}/api/espn?url=`;
+let relayBroken = false;
+
+async function fetchJson(url: string): Promise<any> {
+  const r = await fetch(url);
+  if (!r.ok) throw new Error(`HTTP ${r.status}`);
+  return r.json();
+}
+
+/** Fetch ESPN JSON via our relay first, falling back to a direct request. */
 async function getJson(url: string, ttlMs = 45_000): Promise<any> {
   const hit = cache.get(url);
   if (hit && Date.now() - hit.at < ttlMs) return hit.data;
   let data: unknown;
-  const proxied = SUPABASE_URL ? `${SUPABASE_URL}/functions/v1/espn-proxy?url=${encodeURIComponent(url)}` : null;
-  if (!useProxy) {
+  if (RELAY && !relayBroken) {
     try {
-      const r = await fetch(url);
-      if (!r.ok) throw new Error(`HTTP ${r.status}`);
-      data = await r.json();
+      const r = await fetch(RELAY + encodeURIComponent(url));
+      if ((r.headers.get('content-type') ?? '').includes('json')) {
+        if (!r.ok) throw new Error(`HTTP ${r.status}`); // ESPN answered with an error — report it
+        data = await r.json();
+      } else relayBroken = true; // relay not deployed here (e.g. static hosting) — go direct
     } catch (e) {
-      if (!proxied) throw e;
-      useProxy = true;
+      if (/HTTP \d/.test(String(e))) throw e;
+      relayBroken = true;
     }
   }
-  if (data === undefined && proxied) {
-    const r = await fetch(proxied);
-    if (!r.ok) throw new Error(`Proxy HTTP ${r.status}`);
-    data = await r.json();
-  }
+  if (data === undefined) data = await fetchJson(url);
   cache.set(url, { at: Date.now(), data });
   return data;
 }

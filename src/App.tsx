@@ -9,6 +9,7 @@ import { ChallengesPage } from './pages/Challenges';
 import { Leaderboard } from './pages/Leaderboard';
 import { GroupPage } from './pages/GroupPage';
 import { AuthPage, JoinRoute, PENDING_INVITE, Welcome } from './pages/Onboarding';
+import { AdminPage } from './pages/AdminPage';
 
 function PendingInvite() {
   const nav = useNavigate();
@@ -53,6 +54,7 @@ function Gate() {
       <Layout>
         <Routes>
           <Route path="/join/:code" element={<JoinRoute />} />
+          {user.isSuper && <Route path="/admin" element={<AdminPage />} />}
           {groups.length === 0 ? (
             <Route path="*" element={<Welcome />} />
           ) : (

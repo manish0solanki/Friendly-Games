@@ -44,10 +44,9 @@ function ymd(d: Date): string {
   return `${d.getUTCFullYear()}${String(d.getUTCMonth() + 1).padStart(2, '0')}${String(d.getUTCDate()).padStart(2, '0')}`;
 }
 
-function dateRange(daysBack: number, daysForward: number): string {
-  const now = Date.now();
-  return `${ymd(new Date(now - daysBack * 864e5))}-${ymd(new Date(now + daysForward * 864e5))}`;
-}
+/** ESPN no longer accepts date ranges, so we ask for one day at a time. */
+const DAYS_BACK = 1;
+const DAYS_FORWARD = 6;
 
 export function makeEventId(leagueKey: string, eventId: string, compId: string): string {
   return `espn:${leagueKey}:${eventId}:${compId}`;
@@ -59,13 +58,21 @@ export function parseEventId(id: string): { leagueKey: string; eventId: string; 
 }
 
 /** Fetch upcoming, live and recent matches for one league. */
-export async function fetchLeague(leagueKey: string): Promise<Match[]> {
+export async function fetchLeague(leagueKey: string, liveOnly = false): Promise<Match[]> {
   if (leagueKey === 'cricket/all') return fetchCricket();
   const league = findLeague(leagueKey);
-  const url = `${SITE}/${leagueKey}/scoreboard?dates=${dateRange(1, 7)}&limit=300`;
-  const data = await getJson(url);
-  const leagueName = league?.name ?? data?.leagues?.[0]?.name ?? leagueKey;
-  return parseScoreboard(data, leagueKey, leagueName, league?.allowDraw ?? false);
+  const now = Date.now();
+  const days = liveOnly ? [-1, 0] : Array.from({ length: DAYS_BACK + DAYS_FORWARD + 1 }, (_, i) => i - DAYS_BACK);
+  const results = await Promise.allSettled(
+    days.map((d) =>
+      // today/yesterday refresh every 45s (live scores); future days change rarely
+      getJson(`${SITE}/${leagueKey}/scoreboard?dates=${ymd(new Date(now + d * 864e5))}`, d <= 0 ? 45_000 : 10 * 60_000),
+    ),
+  );
+  const ok = results.filter((r): r is PromiseFulfilledResult<any> => r.status === 'fulfilled');
+  if (!ok.length) throw (results[0] as PromiseRejectedResult).reason;
+  const leagueName = league?.name ?? ok[0].value?.leagues?.[0]?.name ?? leagueKey;
+  return dedupe(ok.flatMap((r) => parseScoreboard(r.value, leagueKey, leagueName, league?.allowDraw ?? false)));
 }
 
 function parseScoreboard(data: any, leagueKey: string, leagueName: string, allowDraw: boolean): Match[] {
@@ -157,13 +164,16 @@ function parseCompetition(leagueKey: string, leagueName: string, ev: any, comp: 
   };
 }
 
+// ESPN sends `winner` as a boolean in most feeds but as the string "true" in some (e.g. cricket summaries).
+const isWinner = (c: any) => c?.winner === true || c?.winner === 'true';
+
 function decideWinner(homeC: any, awayC: any, home: Team, away: Team, allowDraw: boolean): Result {
   const hs = parseFloat(home.score ?? '');
   const as = parseFloat(away.score ?? '');
   // For football (soccer) & rugby, the scoreline decides — a cup tie won on penalties is a draw.
   if (allowDraw && isFinite(hs) && isFinite(as)) return hs > as ? 'home' : as > hs ? 'away' : 'draw';
-  if (homeC?.winner === true) return 'home';
-  if (awayC?.winner === true) return 'away';
+  if (isWinner(homeC)) return 'home';
+  if (isWinner(awayC)) return 'away';
   if (isFinite(hs) && isFinite(as) && !/[/(]/.test(`${home.score}${away.score}`)) {
     if (hs > as) return 'home';
     if (as > hs) return 'away';
@@ -175,9 +185,9 @@ function parseOdds(comp: any, allowDraw: boolean): [number, number, number] {
   const o = comp?.odds?.[0];
   if (o) {
     const ml = (x: any) => (x == null ? NaN : parseFloat(String(x)));
-    const h = moneylineToProb(ml(o.homeTeamOdds?.moneyLine ?? o.moneyline?.home?.close?.odds ?? o.moneyline?.home?.open?.odds));
-    const a = moneylineToProb(ml(o.awayTeamOdds?.moneyLine ?? o.moneyline?.away?.close?.odds ?? o.moneyline?.away?.open?.odds));
-    const d = allowDraw ? moneylineToProb(ml(o.drawOdds?.moneyLine ?? o.moneyline?.draw?.close?.odds)) : 0;
+    const h = moneylineToProb(ml(o.homeTeamOdds?.moneyLine ?? o.moneyline?.home?.close?.odds ?? o.moneyline?.home?.current?.odds ?? o.moneyline?.home?.open?.odds));
+    const a = moneylineToProb(ml(o.awayTeamOdds?.moneyLine ?? o.moneyline?.away?.close?.odds ?? o.moneyline?.away?.current?.odds ?? o.moneyline?.away?.open?.odds));
+    const d = allowDraw ? moneylineToProb(ml(o.drawOdds?.moneyLine ?? o.moneyline?.draw?.close?.odds ?? o.moneyline?.draw?.current?.odds)) : 0;
     if (isFinite(h) && isFinite(a) && (!allowDraw || isFinite(d))) {
       const s = h + a + d;
       return [h / s, a / s, d / s];
@@ -203,7 +213,7 @@ export async function fetchResult(ev: StoredEvent): Promise<{ result: Result; ho
   if (!match) {
     try {
       const day = ymd(new Date(ev.startTime));
-      const data = await getJson(`${SITE}/${leagueKey}/scoreboard?dates=${day}&limit=300`, 120_000);
+      const data = await getJson(`${SITE}/${leagueKey}/scoreboard?dates=${day}`, 120_000);
       match = parseScoreboard(data, leagueKey, ev.league, ev.allowDraw).find((m) => m.id === ev.id);
     } catch {
       return null;

@@ -52,21 +52,23 @@ Open http://localhost:5173. With no database configured, the app runs in **Demo 
 
 Then open the site, create your account, **create a group**, and share the invite code or link.
 
-### Optional: ESPN proxy
+### Site admin
 
-The app calls ESPN directly from the browser. If a browser or network ever blocks that, deploy the included fallback proxy with the [Supabase CLI](https://supabase.com/docs/guides/cli):
+A site admin can see every group, player, bet and challenge on the **Admin** page, with no invite code needed, and has admin rights in every group. To make someone a site admin, run this in the Supabase SQL Editor:
 
-```bash
-supabase functions deploy espn-proxy --no-verify-jwt --project-ref <your-project-ref>
+```sql
+update public.fg_profiles set is_super = true where username = 'their_username';
 ```
 
-The app switches to the proxy automatically when a direct request fails.
+### Live sports data
+
+The browser fetches ESPN data through `api/espn.ts`, a small Vercel Edge Function on your own site that caches each response for 30 seconds. On hosts without it, such as GitHub Pages, the app calls ESPN directly. ESPN only accepts one date per request, so the app loads one request per day, from yesterday to six days ahead.
 
 ---
 
 ## How it works
 
-- `src/lib/espn.ts` fetches and normalises ESPN scoreboards and works out results.
+- `src/lib/espn.ts` fetches and normalises ESPN scoreboards and works out results; `api/espn.ts` is the same-origin relay.
 - `src/lib/odds.ts` holds the group line: `odds = 1 / ((base_prob × 1000 + coins_on_outcome) / (1000 + total_coins))`, with the same formula in SQL.
 - `supabase/schema.sql` contains the tables, row-level security, and all the coin-moving functions (`place_bet`, `create_challenge`, `accept_challenge`, `settle_event`, and the others). The browser cannot edit balances directly.
 - `src/lib/backend/` has two interchangeable backends: Supabase (online) and localStorage (demo).

@@ -4,7 +4,7 @@
  * on one device by switching players) before setting up the free online database.
  */
 import { computeLine, OUTCOME_INDEX, stakesFor, takerStake } from '../odds';
-import type { Bet, Challenge, CustomEventInput, Group, GroupData, Match, Member, Outcome, Profile, Result, StoredEvent } from '../types';
+import type { AdminOverview, Bet, Challenge, CustomEventInput, Group, GroupData, Match, Member, Outcome, Profile, Result, StoredEvent } from '../types';
 import { cleanUsername, matchToStored, validateUsername, type Backend } from './types';
 
 interface DB {
@@ -293,6 +293,17 @@ export class LocalBackend implements Backend {
     const m = this.member(groupId, userId);
     if (m) m.role = role;
     this.save();
+  }
+
+  async adminOverview(): Promise<AdminOverview> {
+    return structuredClone({
+      players: this.db.users.map((u) => ({ id: u.id, username: u.username, createdAt: '', isSuper: false })),
+      groups: this.db.groups,
+      members: this.db.members,
+      bets: this.db.bets,
+      challenges: this.db.challenges,
+      events: this.db.events,
+    });
   }
 
   /** Demo helper: list players on this device for quick switching. */

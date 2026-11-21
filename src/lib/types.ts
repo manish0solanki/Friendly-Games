@@ -33,6 +33,8 @@ export interface Team {
 export interface Profile {
   id: string;
   username: string;
+  /** Site admin: sees every group, player and bet. */
+  isSuper?: boolean;
 }
 
 export interface Group {
@@ -120,4 +122,13 @@ export interface CustomEventInput {
   allowDraw: boolean;
   startTime: string;
   league: string;
+}
+
+export interface AdminOverview {
+  players: { id: string; username: string; createdAt: string; isSuper: boolean }[];
+  groups: Group[];
+  members: (Member & { groupId: string })[];
+  bets: Bet[];
+  challenges: Challenge[];
+  events: Record<string, StoredEvent>;
 }

@@ -19,6 +19,7 @@ create table if not exists public.fg_profiles (
   username text not null unique check (username ~ '^[a-z0-9_.]{3,20}$'),
   created_at timestamptz not null default now()
 );
+alter table public.fg_profiles add column if not exists is_super boolean not null default false;
 
 create table if not exists public.fg_groups (
   id uuid primary key default gen_random_uuid(),
@@ -96,14 +97,21 @@ create index if not exists fg_challenges_group_idx on public.fg_challenges (grou
 create index if not exists fg_challenges_event_idx on public.fg_challenges (event_id) where status in ('open','matched');
 
 -- ---------------------------------------------------------------- helpers
+-- Site admins (fg_profiles.is_super) see every group, player and bet, and have admin rights in every group.
+-- Promote someone with:  update public.fg_profiles set is_super = true where username = '<name>';
+create or replace function public.fg_is_super()
+returns boolean language sql stable security definer set search_path = public as $$
+  select coalesce((select is_super from fg_profiles where id = auth.uid()), false);
+$$;
+
 create or replace function public.fg_is_member(p_group uuid)
 returns boolean language sql stable security definer set search_path = public as $$
-  select exists (select 1 from fg_members where group_id = p_group and user_id = auth.uid());
+  select fg_is_super() or exists (select 1 from fg_members where group_id = p_group and user_id = auth.uid());
 $$;
 
 create or replace function public.fg_is_admin(p_group uuid)
 returns boolean language sql stable security definer set search_path = public as $$
-  select exists (select 1 from fg_members where group_id = p_group and user_id = auth.uid() and role = 'admin');
+  select fg_is_super() or exists (select 1 from fg_members where group_id = p_group and user_id = auth.uid() and role = 'admin');
 $$;
 
 -- Creates a Friendly Games login (username + password) that is ready to use
@@ -474,7 +482,7 @@ drop policy if exists "fg_challenges for members" on public.fg_challenges;
 create policy "fg_challenges for members" on public.fg_challenges for select to authenticated using (public.fg_is_member(group_id));
 
 -- No insert/update/delete policies: every write goes through the functions above.
-revoke all on function public.fg_is_member(uuid), public.fg_is_admin(uuid), public.fg_compute_line(text, uuid),
+revoke all on function public.fg_is_super(), public.fg_is_member(uuid), public.fg_is_admin(uuid), public.fg_compute_line(text, uuid),
   public.fg_ensure_event(jsonb, uuid) from public, anon;
 revoke all on function public.fg_ensure_event(jsonb, uuid) from authenticated;
 revoke all on function public.fg_create_group(text, numeric), public.fg_join_group(text),
@@ -483,7 +491,7 @@ revoke all on function public.fg_create_group(text, numeric), public.fg_join_gro
   public.fg_accept_challenge(uuid), public.fg_cancel_challenge(uuid), public.fg_settle_event(text, text, text, text),
   public.fg_create_custom_event(uuid, text, text, text, boolean, timestamptz, text),
   public.fg_adjust_balance(uuid, uuid, numeric), public.fg_set_member_role(uuid, uuid, text) from public, anon;
-grant execute on function public.fg_is_member(uuid), public.fg_is_admin(uuid), public.fg_compute_line(text, uuid),
+grant execute on function public.fg_is_super(), public.fg_is_member(uuid), public.fg_is_admin(uuid), public.fg_compute_line(text, uuid),
   public.fg_create_group(text, numeric), public.fg_join_group(text),
   public.fg_place_bet(uuid, jsonb, text, numeric),
   public.fg_create_challenge(uuid, jsonb, text, numeric, numeric, uuid, text),

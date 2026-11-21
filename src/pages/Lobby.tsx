@@ -46,7 +46,7 @@ function filterWhen(ms: Match[], when: When): Match[] {
 }
 
 function MatchesView({ leagues, defaultWhen = 'upcoming', extra = [] }: { leagues: string[]; defaultWhen?: When; extra?: Match[] }) {
-  const { matches, loading, errors } = useLeagues(leagues);
+  const { matches, loading, errors } = useLeagues(leagues, defaultWhen === 'live');
   const [when, setWhen] = useState<When>(defaultWhen);
   const all = useMemo(() => [...extra, ...matches].sort((a, b) => a.startTime.localeCompare(b.startTime)), [matches, extra]);
   const counts = { upcoming: filterWhen(all, 'upcoming').length, live: filterWhen(all, 'live').length, results: filterWhen(all, 'results').length };

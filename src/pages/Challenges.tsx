@@ -14,7 +14,7 @@ export function ChallengeCard({ c, compact }: { c: Challenge; compact?: boolean 
   const nameOf = (id?: string | null) => (id === user?.id ? 'You' : data.members.find((m) => m.userId === id)?.username ?? 'someone');
   const started = new Date(ev.startTime) <= new Date();
   const canAccept = c.status === 'open' && c.creatorId !== user?.id && (!c.targetId || c.targetId === user?.id) && !started;
-  const canCancel = c.status === 'open' && (c.creatorId === user?.id || data.members.find((m) => m.userId === user?.id)?.role === 'admin');
+  const canCancel = c.status === 'open' && (c.creatorId === user?.id || !!user?.isSuper || data.members.find((m) => m.userId === user?.id)?.role === 'admin');
   const k = kickoff(ev.startTime);
   const iWon = c.status === 'settled' && c.winnerId === user?.id;
   const involved = c.creatorId === user?.id || c.takerId === user?.id;

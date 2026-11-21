@@ -228,7 +228,7 @@ export function useApp(): Ctx {
 }
 
 // ---- live data hook -------------------------------------------------------------
-export function useLeagues(keys: string[]) {
+export function useLeagues(keys: string[], liveOnly = false) {
   const { reportMatches } = useApp();
   const [matches, setMatches] = useState<Match[]>([]);
   const [loading, setLoading] = useState(true);
@@ -240,7 +240,7 @@ export function useLeagues(keys: string[]) {
     const ks = keyStr ? keyStr.split('|') : [];
     const load = async (first: boolean) => {
       if (first) setLoading(true);
-      const results = await Promise.allSettled(ks.map((k) => fetchLeague(k)));
+      const results = await Promise.allSettled(ks.map((k) => fetchLeague(k, liveOnly)));
       if (!alive) return;
       const ms: Match[] = [];
       const errs: string[] = [];
@@ -257,7 +257,7 @@ export function useLeagues(keys: string[]) {
       alive = false;
       clearInterval(t);
     };
-  }, [keyStr, reportMatches]);
+  }, [keyStr, liveOnly, reportMatches]);
 
   return { matches, loading, errors };
 }

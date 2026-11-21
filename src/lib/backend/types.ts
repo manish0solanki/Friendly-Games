@@ -1,4 +1,4 @@
-import type { CustomEventInput, Group, GroupData, Match, Outcome, Profile, Result, StoredEvent } from '../types';
+import type { AdminOverview, CustomEventInput, Group, GroupData, Match, Outcome, Profile, Result, StoredEvent } from '../types';
 
 export interface Backend {
   mode: 'demo' | 'online';
@@ -31,6 +31,8 @@ export interface Backend {
   createCustomEvent(groupId: string, input: CustomEventInput): Promise<StoredEvent>;
   adjustBalance(groupId: string, userId: string, amount: number): Promise<void>;
   setRole(groupId: string, userId: string, role: 'admin' | 'member'): Promise<void>;
+  /** Everything across all groups — only returns full data for site admins. */
+  adminOverview(): Promise<AdminOverview>;
 }
 
 export function matchToStored(m: Match): StoredEvent {

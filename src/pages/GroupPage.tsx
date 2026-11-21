@@ -32,7 +32,7 @@ export function GroupPage() {
     );
   }
   if (!data || !user) return null;
-  const isAdmin = data.members.find((m) => m.userId === user.id)?.role === 'admin';
+  const isAdmin = !!user.isSuper || data.members.find((m) => m.userId === user.id)?.role === 'admin';
   const custom = Object.values(data.events).filter((e) => e.groupId === group.id).sort((a, b) => b.startTime.localeCompare(a.startTime));
   const nameOf = (id?: string | null) => data.members.find((m) => m.userId === id)?.username ?? 'someone';
 

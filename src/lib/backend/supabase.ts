@@ -1,6 +1,6 @@
 import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 import { SUPABASE_ANON_KEY, SUPABASE_URL } from '../config';
-import type { Bet, Challenge, Group, GroupData, Member, StoredEvent } from '../types';
+import type { AdminOverview, Bet, Challenge, Group, GroupData, Member, StoredEvent } from '../types';
 import { cleanUsername, matchToStored, validateUsername, type Backend } from './types';
 
 // Players sign in with a username; Supabase Auth needs an email, so we derive a private one.
@@ -26,6 +26,47 @@ const mapGroup = (g: any): Group => ({
   inviteCode: g.invite_code,
   startingBalance: Number(g.starting_balance),
   createdBy: g.created_by,
+});
+
+const mapBet = (x: any): Bet => ({
+  id: x.id,
+  groupId: x.group_id,
+  userId: x.user_id,
+  eventId: x.event_id,
+  pick: x.pick,
+  stake: Number(x.stake),
+  odds: Number(x.odds),
+  status: x.status,
+  payout: Number(x.payout),
+  createdAt: x.created_at,
+  settledAt: x.settled_at,
+});
+
+const mapChallenge = (x: any): Challenge => ({
+  id: x.id,
+  groupId: x.group_id,
+  eventId: x.event_id,
+  creatorId: x.creator_id,
+  pick: x.pick,
+  odds: Number(x.odds),
+  stake: Number(x.stake),
+  takerStake: Number(x.taker_stake),
+  targetId: x.target_id,
+  takerId: x.taker_id,
+  status: x.status,
+  winnerId: x.winner_id,
+  message: x.message,
+  createdAt: x.created_at,
+  matchedAt: x.matched_at,
+  settledAt: x.settled_at,
+});
+
+const mapMember = (x: any): Member => ({
+  userId: x.user_id,
+  username: x.fg_profiles?.username ?? 'player',
+  role: x.role,
+  balance: Number(x.balance),
+  joinedAt: x.joined_at,
 });
 
 const mapEvent = (e: any): StoredEvent => ({
@@ -56,8 +97,8 @@ export class SupabaseBackend implements Backend {
     const { data } = await this.sb.auth.getSession();
     const user = data.session?.user;
     if (!user) return null;
-    const { data: p } = await this.sb.from('fg_profiles').select('id, username').eq('id', user.id).maybeSingle();
-    return { id: user.id, username: p?.username ?? user.user_metadata?.username ?? 'player' };
+    const { data: p } = await this.sb.from('fg_profiles').select('id, username, is_super').eq('id', user.id).maybeSingle();
+    return { id: user.id, username: p?.username ?? user.user_metadata?.fg_username ?? 'player', isSuper: !!p?.is_super };
   }
 
   onAuthChange(cb: () => void) {
@@ -89,6 +130,13 @@ export class SupabaseBackend implements Backend {
     const { data: s } = await this.sb.auth.getSession();
     const uid = s.session?.user.id;
     if (!uid) return [];
+    const { data: me } = await this.sb.from('fg_profiles').select('is_super').eq('id', uid).maybeSingle();
+    if (me?.is_super) {
+      // site admin: every group is visible
+      const { data, error } = await this.sb.from('fg_groups').select('*').order('created_at');
+      err(error);
+      return (data ?? []).map(mapGroup);
+    }
     const { data, error } = await this.sb.from('fg_members').select('fg_groups(*)').eq('user_id', uid);
     err(error);
     return (data ?? []).map((r: any) => mapGroup(r.fg_groups)).filter(Boolean);
@@ -116,54 +164,47 @@ export class SupabaseBackend implements Backend {
     ]);
     for (const r of [g, m, b, c, ce]) err(r.error);
 
-    const bets: Bet[] = (b.data ?? []).map((x: any) => ({
-      id: x.id,
-      groupId: x.group_id,
-      userId: x.user_id,
-      eventId: x.event_id,
-      pick: x.pick,
-      stake: Number(x.stake),
-      odds: Number(x.odds),
-      status: x.status,
-      payout: Number(x.payout),
-      createdAt: x.created_at,
-      settledAt: x.settled_at,
-    }));
-    const challenges: Challenge[] = (c.data ?? []).map((x: any) => ({
-      id: x.id,
-      groupId: x.group_id,
-      eventId: x.event_id,
-      creatorId: x.creator_id,
-      pick: x.pick,
-      odds: Number(x.odds),
-      stake: Number(x.stake),
-      takerStake: Number(x.taker_stake),
-      targetId: x.target_id,
-      takerId: x.taker_id,
-      status: x.status,
-      winnerId: x.winner_id,
-      message: x.message,
-      createdAt: x.created_at,
-      matchedAt: x.matched_at,
-      settledAt: x.settled_at,
-    }));
-    const members: Member[] = (m.data ?? []).map((x: any) => ({
-      userId: x.user_id,
-      username: x.fg_profiles?.username ?? 'player',
-      role: x.role,
-      balance: Number(x.balance),
-      joinedAt: x.joined_at,
-    }));
+    const bets: Bet[] = (b.data ?? []).map(mapBet);
+    const challenges: Challenge[] = (c.data ?? []).map(mapChallenge);
+    const members: Member[] = (m.data ?? []).map(mapMember);
 
     const events: Record<string, StoredEvent> = {};
     for (const e of ce.data ?? []) events[e.id] = mapEvent(e);
-    const need = [...new Set([...bets.map((x) => x.eventId), ...challenges.map((x) => x.eventId)])].filter((id) => !events[id]);
+    await this.loadEvents(events, [...bets.map((x) => x.eventId), ...challenges.map((x) => x.eventId)]);
+    return { group: mapGroup(g.data), members, bets, challenges, events };
+  }
+
+  private async loadEvents(into: Record<string, StoredEvent>, ids: string[]) {
+    const need = [...new Set(ids)].filter((id) => !into[id]);
     for (let i = 0; i < need.length; i += 80) {
       const r = await this.sb.from('fg_events').select('*').in('id', need.slice(i, i + 80));
       err(r.error);
-      for (const e of r.data ?? []) events[e.id] = mapEvent(e);
+      for (const e of r.data ?? []) into[e.id] = mapEvent(e);
     }
-    return { group: mapGroup(g.data), members, bets, challenges, events };
+  }
+
+  /** Site admins only (row-level security returns everything for them, and only their own groups for others). */
+  async adminOverview(): Promise<AdminOverview> {
+    const [p, g, m, b, c] = await Promise.all([
+      this.sb.from('fg_profiles').select('id, username, created_at, is_super').order('created_at'),
+      this.sb.from('fg_groups').select('*').order('created_at'),
+      this.sb.from('fg_members').select('*, fg_profiles(username)'),
+      this.sb.from('fg_bets').select('*').order('created_at', { ascending: false }).limit(1000),
+      this.sb.from('fg_challenges').select('*').order('created_at', { ascending: false }).limit(500),
+    ]);
+    for (const r of [p, g, m, b, c]) err(r.error);
+    const bets = (b.data ?? []).map(mapBet);
+    const challenges = (c.data ?? []).map(mapChallenge);
+    const events: Record<string, StoredEvent> = {};
+    await this.loadEvents(events, [...bets.map((x) => x.eventId), ...challenges.map((x) => x.eventId)]);
+    return {
+      players: (p.data ?? []).map((x: any) => ({ id: x.id, username: x.username, createdAt: x.created_at, isSuper: !!x.is_super })),
+      groups: (g.data ?? []).map(mapGroup),
+      members: (m.data ?? []).map((x: any) => ({ ...mapMember(x), groupId: x.group_id })),
+      bets,
+      challenges,
+      events,
+    };
   }
 
   async placeBet(groupId: string, match: any, pick: any, stake: number) {

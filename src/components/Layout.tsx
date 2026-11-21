@@ -47,6 +47,7 @@ function TopBar() {
         </NavLink>
         <NavLink to="/leaderboard">Leaderboard</NavLink>
         <NavLink to="/group">Group</NavLink>
+        {user?.isSuper && <NavLink to="/admin">🛡️ Admin</NavLink>}
       </nav>
       <span className="spacer" />
       {me && (
@@ -64,7 +65,19 @@ function TopBar() {
               <div className="label">Signed in as</div>
               <div className="item" style={{ fontWeight: 700 }}>
                 <Avatar name={user.username} size="sm" /> {user.username}
+                {user.isSuper && <span className="pill">site admin</span>}
               </div>
+              {user.isSuper && (
+                <button
+                  className="item"
+                  onClick={() => {
+                    setOpen(false);
+                    nav('/admin');
+                  }}
+                >
+                  🛡️ Admin dashboard
+                </button>
+              )}
               <div className="sep" />
               <div className="label">Your groups</div>
               {groups.map((g) => (

@@ -65,6 +65,11 @@ export function BetSlip({ onClose }: { onClose?: () => void }) {
             <div className="big">👥</div>
             Join or create a group to start betting with friends.
           </div>
+        ) : data && !me ? (
+          <div className="slip-empty">
+            <div className="big">🛡️</div>
+            You're viewing <b>{group.name}</b> as site admin. Join it with its invite code to place bets.
+          </div>
         ) : slip.length === 0 ? (
           <div className="slip-empty">
             <div className="big">🎟️</div>

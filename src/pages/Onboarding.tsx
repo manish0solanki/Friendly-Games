@@ -206,7 +206,7 @@ export function AuthPage() {
             </div>
           )}
           {error && <div className="err">{error}</div>}
-          <button className="btn primary block" style={{ marginTop: 6 }} disabled={busy || !username || (IS_ONLINE && password.length < 6)}>
+          <button className="btn primary block" style={{ marginTop: 6 }} disabled={busy || !username || (IS_ONLINE && (mode === 'signup' ? password.length < 6 : !password))}>
             {busy ? 'Please wait…' : mode === 'signup' ? 'Create account' : 'Sign in'}
           </button>
           <div className="muted" style={{ textAlign: 'center', marginTop: 14 }}>

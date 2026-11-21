@@ -1,43 +1,146 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useApp } from '../lib/store';
 import { fmtCoins, formatOdds, OUTCOME_INDEX } from '../lib/odds';
-import { CONFIRM_SECONDS, fetchQuote, hasQuotes } from '../lib/quote';
-import type { Outcome } from '../lib/types';
+import { CONFIRM_SECONDS, fetchQuote, hasQuotes, type Quote } from '../lib/quote';
+import { cashOutValue, useLiveMatches } from '../lib/useLiveMatches';
+import type { Bet, StoredEvent } from '../lib/types';
 import { sportIcon } from '../lib/sports';
 import { eventPath, kickoff, pickLabel } from '../lib/util';
-import { Coins, ConfirmingNote, Empty } from '../components/bits';
+import { Coins, ConfirmingNote, Empty, Modal } from '../components/bits';
 
-function CashOutButton({ betId, eventId, startTime, stake, odds, pick }: { betId: string; eventId: string; startTime: string; stake: number; odds: number; pick: Outcome }) {
-  const { backend, refresh, toast } = useApp();
+interface CashOutTarget {
+  bet: Bet;
+  event: StoredEvent;
+}
+
+/** In-app cash-out sheet: shows the live score and the value before you commit. */
+function CashOutModal({ target, onClose }: { target: CashOutTarget; onClose(): void }) {
+  const { backend, refresh, toast, oddsFormat } = useApp();
+  const { bet, event } = target;
+  const [quote, setQuote] = useState<Quote | null>(null);
+  const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
-  async function go() {
+
+  // fetch a fresh signed price now, and keep it fresh while the sheet is open
+  useEffect(() => {
+    let alive = true;
+    const load = async () => {
+      try {
+        const q = await fetchQuote(event.id, event.startTime);
+        if (alive) {
+          setQuote(q);
+          setError('');
+        }
+      } catch (e: any) {
+        if (alive) setError(e.message);
+      }
+    };
+    load();
+    const t = setInterval(load, 10_000);
+    return () => {
+      alive = false;
+      clearInterval(t);
+    };
+  }, [event.id, event.startTime]);
+
+  const p = quote?.payload;
+  const current = p?.odds?.[OUTCOME_INDEX[bet.pick]];
+  const value = p?.state === 'in' ? cashOutValue(bet.stake, bet.odds, current) : null;
+  const unavailable = p && (p.state !== 'in' || !value);
+
+  async function confirmCashOut() {
     setBusy(true);
+    setError('');
     try {
-      const q = await fetchQuote(eventId, startTime);
-      const now = q.payload.odds?.[OUTCOME_INDEX[pick]];
-      if (q.payload.state !== 'in' || !now) throw new Error('Cash out is only available while the match is live with a price');
-      const est = Math.max(0.01, Math.round(((stake * odds) / now) * 100) / 100);
-      if (!confirm(`Cash out now for about ${fmtCoins(est)} coins?\n\nScore ${q.payload.score} (${q.payload.status}). It confirms after ${CONFIRM_SECONDS} seconds if the score doesn't change.`)) return;
-      const v = await backend.requestCashout(betId, q);
-      toast(`Cash out of ${fmtCoins(v)} requested — confirms in ${CONFIRM_SECONDS}s ⏱️`, 'info');
+      // prices are only valid for a few seconds, so sign a fresh one at the moment you confirm
+      const q = await fetchQuote(event.id, event.startTime);
+      const v = await backend.requestCashout(bet.id, q);
+      toast(`Cashing out for ${fmtCoins(v)} — confirms in ${CONFIRM_SECONDS}s if the score holds ⏱️`, 'info');
       await refresh();
+      onClose();
     } catch (e: any) {
-      toast(e.message, 'error');
+      setError(e.message);
     } finally {
       setBusy(false);
     }
   }
+
   return (
-    <button className="btn sm" style={{ marginTop: 6, borderColor: 'rgba(168,85,247,.5)' }} disabled={busy} onClick={go}>
-      {busy ? 'Checking price…' : '💸 Cash out'}
-    </button>
+    <Modal title="💸 Cash out" onClose={onClose}>
+      <div className="co-match">
+        <div className="muted" style={{ fontSize: 12 }}>
+          {sportIcon(event.sport)} {event.league}
+        </div>
+        <div className="co-teams">
+          <span>{event.home.name}</span>
+          <b className="co-score">{p ? `${p.homeScore ?? '-'} – ${p.awayScore ?? '-'}` : '…'}</b>
+          <span>{event.away.name}</span>
+        </div>
+        {p && (
+          <div style={{ textAlign: 'center' }}>
+            {p.state === 'in' ? <span className="live-pill">LIVE {p.status}</span> : <span className="muted">{p.status}</span>}
+          </div>
+        )}
+      </div>
+
+      <div className="co-row">
+        <span className="muted">Your bet</span>
+        <b>
+          {pickLabel(event, bet.pick)} @ <span style={{ color: 'var(--gold)' }}>{formatOdds(bet.odds, oddsFormat)}</span>
+        </b>
+      </div>
+      <div className="co-row">
+        <span className="muted">Stake · if it wins</span>
+        <b className="num">
+          {fmtCoins(bet.stake)} · {fmtCoins(bet.stake * bet.odds)}
+        </b>
+      </div>
+      <div className="co-row">
+        <span className="muted">Current price</span>
+        <b className="num">{current ? formatOdds(current, oddsFormat) : '—'}</b>
+      </div>
+
+      <div className="co-value">
+        <div className="muted" style={{ fontSize: 12, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.06em' }}>
+          Cash out now for
+        </div>
+        <div className="co-amount">{!quote && !error ? '…' : value ? <Coins n={value} /> : '—'}</div>
+        {value != null && (
+          <div className={value >= bet.stake ? 'pos' : 'neg'} style={{ fontSize: 13, fontWeight: 700 }}>
+            {value >= bet.stake ? '+' : ''}
+            {fmtCoins(value - bet.stake)} vs your stake
+          </div>
+        )}
+      </div>
+
+      {unavailable && !error && <div className="err">Cash out isn’t available right now — prices may be suspended after a goal. Try again in a moment.</div>}
+      {error && <div className="err">{error}</div>}
+
+      <div className="row" style={{ marginTop: 14 }}>
+        <button className="btn" style={{ flex: 1 }} onClick={onClose} disabled={busy}>
+          Keep bet
+        </button>
+        <button className="btn primary" style={{ flex: 1.4 }} onClick={confirmCashOut} disabled={busy || !value}>
+          {busy ? 'Cashing out…' : value ? `Cash out ${fmtCoins(value)}` : 'Cash out'}
+        </button>
+      </div>
+      <div className="dim" style={{ fontSize: 12, marginTop: 10, textAlign: 'center' }}>
+        Confirms after {CONFIRM_SECONDS} seconds if the score doesn’t change. The final amount uses the price at the moment you confirm.
+      </div>
+    </Modal>
   );
 }
 
 export function MyBets() {
   const { data, user, oddsFormat } = useApp();
   const [tab, setTab] = useState<'open' | 'settled'>('open');
+  const [cashOut, setCashOut] = useState<CashOutTarget | null>(null);
+  const openEvents = (data && user ? data.bets.filter((b) => b.userId === user.id && (b.status === 'open' || b.status === 'pending')) : [])
+    .map((b) => data!.events[b.eventId])
+    .filter(Boolean)
+    .map((e) => ({ id: e.id, startTime: e.startTime, settled: !!e.settledAt }));
+  const live = useLiveMatches(openEvents);
   if (!data || !user) return null;
   const mine = data.bets.filter((b) => b.userId === user.id);
   const open = mine.filter((b) => b.status === 'open' || b.status === 'pending');
@@ -106,6 +209,15 @@ export function MyBets() {
                   <div className="sub">
                     {ev.league} · {k.day} {k.time}
                   </div>
+                  {live[ev.id] && live[ev.id].state !== 'pre' && (b.status === 'open' || b.status === 'pending') && (
+                    <div className="bet-score">
+                      {live[ev.id].state === 'in' ? <span className="live-pill">LIVE</span> : <b>FT</b>}
+                      <span className="num">
+                        {live[ev.id].home.short} <b>{live[ev.id].home.score ?? '-'}</b> – <b>{live[ev.id].away.score ?? '-'}</b> {live[ev.id].away.short}
+                      </span>
+                      {live[ev.id].state === 'in' && <span className="dim">{live[ev.id].statusText}</span>}
+                    </div>
+                  )}
                   {b.status === 'pending' && <ConfirmingNote since={b.createdAt} />}
                   {b.status === 'open' && b.cashoutRequestedAt && <ConfirmingNote since={b.cashoutRequestedAt} what="Cash out" />}
                 </div>
@@ -135,7 +247,14 @@ export function MyBets() {
                     </div>
                   )}
                   {b.status === 'open' && !b.cashoutRequestedAt && data.group.liveBetting && hasQuotes(ev.id) && !ev.settledAt && Date.parse(ev.startTime) <= Date.now() && (
-                    <CashOutButton betId={b.id} eventId={ev.id} startTime={ev.startTime} stake={b.stake} odds={b.odds} pick={b.pick} />
+                    <button className="btn sm cashout-btn" onClick={() => setCashOut({ bet: b, event: ev })}>
+                      💸 Cash out
+                      {(() => {
+                        const m = live[ev.id];
+                        const v = m?.state === 'in' ? cashOutValue(b.stake, b.odds, m.liveOdds?.[OUTCOME_INDEX[b.pick]]) : null;
+                        return v ? <span className="num"> ≈ {fmtCoins(v)}</span> : null;
+                      })()}
+                    </button>
                   )}
                 </div>
               </div>
@@ -149,6 +268,7 @@ export function MyBets() {
           </Empty>
         )}
       </div>
+      {cashOut && <CashOutModal target={cashOut} onClose={() => setCashOut(null)} />}
     </>
   );
 }

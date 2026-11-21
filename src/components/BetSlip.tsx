@@ -5,6 +5,7 @@ import { lineFor, pickLabel } from '../lib/util';
 import type { Match, Outcome } from '../lib/types';
 import { Coins, Modal } from './bits';
 import { CONFIRM_SECONDS, fetchQuote } from '../lib/quote';
+import { useLiveMatches } from '../lib/useLiveMatches';
 import { outcomesFor } from './MatchList';
 
 export function BetSlip({ onClose }: { onClose?: () => void }) {
@@ -14,7 +15,10 @@ export function BetSlip({ onClose }: { onClose?: () => void }) {
   const me = data?.members.find((m) => m.userId === user?.id);
   const balance = me?.balance ?? 0;
 
-  const items = slip.map((s) => {
+  // keep live selections fresh: current score, clock and in-play price
+  const live = useLiveMatches(slip.filter((s) => s.match.state === 'in').map((s) => ({ id: s.match.id, startTime: s.match.startTime })));
+  const items = slip.map((s0) => {
+    const s = { ...s0, match: live[s0.match.id] ? { ...live[s0.match.id], baseProbs: s0.match.baseProbs } : s0.match };
     const odds = lineFor(s.match, data)[OUTCOME_INDEX[s.pick]];
     const stake = parseFloat(s.stake) || 0;
     return { ...s, odds, stakeN: stake, returns: stake * odds };
@@ -94,8 +98,20 @@ export function BetSlip({ onClose }: { onClose?: () => void }) {
                     {pickLabel(it.match, it.pick)}
                   </div>
                   <div className="ev">{it.match.name}</div>
+                  {it.match.state === 'in' && (
+                    <div className="bet-score" style={{ marginTop: 4 }}>
+                      <span className="num">
+                        {it.match.home.short} <b>{it.match.home.score ?? '-'}</b> – <b>{it.match.away.score ?? '-'}</b> {it.match.away.short}
+                      </span>
+                      <span className="dim">{it.match.statusText}</span>
+                    </div>
+                  )}
                   <div className="ev">
-                    {it.match.state === 'in' ? `In-play ${it.match.statusText} · live price, confirmed after ${CONFIRM_SECONDS}s` : `Match result · ${it.match.league}`}
+                    {it.match.state === 'in'
+                      ? it.match.liveOpen
+                        ? `Live price · confirmed after ${CONFIRM_SECONDS}s`
+                        : 'Live prices suspended — try again in a moment'
+                      : `Match result · ${it.match.league}`}
                   </div>
                 </div>
                 <span className="price">{formatOdds(it.odds, oddsFormat)}</span>

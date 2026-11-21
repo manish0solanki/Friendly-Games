@@ -45,8 +45,18 @@ function filterWhen(ms: Match[], when: When): Match[] {
   return ms.filter((m) => m.state === 'pre');
 }
 
-function MatchesView({ leagues, defaultWhen = 'upcoming', extra = [] }: { leagues: string[]; defaultWhen?: When; extra?: Match[] }) {
-  const { matches, loading, errors } = useLeagues(leagues, defaultWhen === 'live');
+function MatchesView({
+  leagues,
+  defaultWhen = 'upcoming',
+  extra = [],
+  range = 'full',
+}: {
+  leagues: string[];
+  defaultWhen?: When;
+  extra?: Match[];
+  range?: 'live' | 'short' | 'full';
+}) {
+  const { matches, loading, errors } = useLeagues(leagues, defaultWhen === 'live' ? 'live' : range);
   const [when, setWhen] = useState<When>(defaultWhen);
   const all = useMemo(() => [...extra, ...matches].sort((a, b) => a.startTime.localeCompare(b.startTime)), [matches, extra]);
   const counts = { upcoming: filterWhen(all, 'upcoming').length, live: filterWhen(all, 'live').length, results: filterWhen(all, 'results').length };
@@ -64,7 +74,7 @@ function MatchesView({ leagues, defaultWhen = 'upcoming', extra = [] }: { league
       ) : (
         <div className="card">
           <Empty icon={when === 'live' ? '📡' : '📅'} title={when === 'live' ? 'Nothing live right now' : 'No matches in this window'}>
-            {when === 'upcoming' ? 'Fixtures for the next 7 days appear here. Try another league or sport.' : 'Check the other tabs.'}
+            {when === 'upcoming' ? 'Upcoming fixtures appear here. Try another league or sport from the menu.' : 'Check the other tabs.'}
           </Empty>
         </div>
       )}
@@ -121,7 +131,7 @@ export function Home() {
         <h2>Top events</h2>
         <span className="count">Football · Cricket · NBA · NFL</span>
       </div>
-      <MatchesView leagues={FEATURED_LEAGUES} extra={specials} />
+      <MatchesView leagues={FEATURED_LEAGUES} extra={specials} range="short" />
     </>
   );
 }

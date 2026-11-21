@@ -21,6 +21,21 @@ export function OddsButtons({ match, big }: { match: Match; big?: boolean }) {
   const sel = slip.find((s) => s.match.id === match.id);
   const outs = outcomesFor(match);
   const idx = { home: 0, away: 1, draw: 2 } as const;
+  if (match.state === 'in' && !live && !big) {
+    const why = !match.liveOdds
+      ? 'No in-play odds'
+      : !group?.liveBetting
+        ? 'Live betting off'
+        : 'In-play closed';
+    return (
+      <div className="odds-grid" style={{ ['--cols' as any]: outs.length }}>
+        <Link to={eventPath(match.id)} className="odd-note" style={{ gridColumn: '1 / -1' }} title="Pre-match odds closed at kick-off. In-play challenges may still be open.">
+          {why}
+          <span>Challenge a friend ›</span>
+        </Link>
+      </div>
+    );
+  }
   return (
     <div className={big ? 'big-odds' : 'odds-grid'} style={{ ['--cols' as any]: outs.length }}>
       {outs.map((o) => (

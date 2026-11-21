@@ -415,3 +415,5 @@ textarea.input { height: auto; padding: 10px 12px; resize: vertical; }
 .toggle::after { content: ''; position: absolute; top: 3px; left: 3px; width: 18px; height: 18px; border-radius: 50%; background: #fff; transition: transform .15s; }
 .toggle.on { background: var(--accent); }
 .toggle.on::after { transform: translateX(20px); }
+.odd-note { height: 44px; border-radius: var(--radius-sm); border: 1px dashed var(--line-2); display: grid; place-items: center; align-content: center; gap: 1px; font-size: 11.5px; font-weight: 700; color: var(--muted); text-align: center; padding: 0 6px; }
+.odd-note span { font-size: 10.5px; font-weight: 600; color: var(--dim); }

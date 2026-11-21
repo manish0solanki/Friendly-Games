@@ -56,7 +56,7 @@ export class SupabaseBackend implements Backend {
     const { data } = await this.sb.auth.getSession();
     const user = data.session?.user;
     if (!user) return null;
-    const { data: p } = await this.sb.from('profiles').select('id, username').eq('id', user.id).maybeSingle();
+    const { data: p } = await this.sb.from('fg_profiles').select('id, username').eq('id', user.id).maybeSingle();
     return { id: user.id, username: p?.username ?? user.user_metadata?.username ?? 'player' };
   }
 
@@ -71,15 +71,9 @@ export class SupabaseBackend implements Backend {
     const u = cleanUsername(username);
     const v = validateUsername(u);
     if (v) throw new Error(v);
-    const { data: taken } = await this.sb.rpc('username_taken', { p_username: u });
-    if (taken === true) throw new Error('That username is taken.');
-    const { data, error } = await this.sb.auth.signUp({ email: toEmail(u), password, options: { data: { username: u } } });
+    const { error } = await this.sb.rpc('fg_sign_up', { p_username: u, p_password: password });
     err(error);
-    if (!data.session) {
-      throw new Error(
-        'Account created, but Supabase is asking for email confirmation. Turn off "Confirm email" in Supabase → Authentication → Sign In / Providers → Email, then sign in.',
-      );
-    }
+    await this.signIn(u, password);
   }
 
   async signIn(username: string, password: string) {
@@ -95,30 +89,30 @@ export class SupabaseBackend implements Backend {
     const { data: s } = await this.sb.auth.getSession();
     const uid = s.session?.user.id;
     if (!uid) return [];
-    const { data, error } = await this.sb.from('group_members').select('groups(*)').eq('user_id', uid);
+    const { data, error } = await this.sb.from('fg_members').select('fg_groups(*)').eq('user_id', uid);
     err(error);
-    return (data ?? []).map((r: any) => mapGroup(r.groups)).filter(Boolean);
+    return (data ?? []).map((r: any) => mapGroup(r.fg_groups)).filter(Boolean);
   }
 
   async createGroup(name: string, startingBalance: number) {
-    const { data, error } = await this.sb.rpc('create_group', { p_name: name, p_starting_balance: startingBalance });
+    const { data, error } = await this.sb.rpc('fg_create_group', { p_name: name, p_starting_balance: startingBalance });
     err(error);
     return mapGroup(data);
   }
 
   async joinGroup(code: string) {
-    const { data, error } = await this.sb.rpc('join_group', { p_code: code });
+    const { data, error } = await this.sb.rpc('fg_join_group', { p_code: code });
     err(error);
     return mapGroup(data);
   }
 
   async groupData(groupId: string): Promise<GroupData> {
     const [g, m, b, c, ce] = await Promise.all([
-      this.sb.from('groups').select('*').eq('id', groupId).single(),
-      this.sb.from('group_members').select('*, profiles(username)').eq('group_id', groupId),
-      this.sb.from('bets').select('*').eq('group_id', groupId).order('created_at', { ascending: false }).limit(2000),
-      this.sb.from('challenges').select('*').eq('group_id', groupId).order('created_at', { ascending: false }).limit(1000),
-      this.sb.from('events').select('*').eq('group_id', groupId),
+      this.sb.from('fg_groups').select('*').eq('id', groupId).single(),
+      this.sb.from('fg_members').select('*, fg_profiles(username)').eq('group_id', groupId),
+      this.sb.from('fg_bets').select('*').eq('group_id', groupId).order('created_at', { ascending: false }).limit(2000),
+      this.sb.from('fg_challenges').select('*').eq('group_id', groupId).order('created_at', { ascending: false }).limit(1000),
+      this.sb.from('fg_events').select('*').eq('group_id', groupId),
     ]);
     for (const r of [g, m, b, c, ce]) err(r.error);
 
@@ -155,7 +149,7 @@ export class SupabaseBackend implements Backend {
     }));
     const members: Member[] = (m.data ?? []).map((x: any) => ({
       userId: x.user_id,
-      username: x.profiles?.username ?? 'player',
+      username: x.fg_profiles?.username ?? 'player',
       role: x.role,
       balance: Number(x.balance),
       joinedAt: x.joined_at,
@@ -165,7 +159,7 @@ export class SupabaseBackend implements Backend {
     for (const e of ce.data ?? []) events[e.id] = mapEvent(e);
     const need = [...new Set([...bets.map((x) => x.eventId), ...challenges.map((x) => x.eventId)])].filter((id) => !events[id]);
     for (let i = 0; i < need.length; i += 80) {
-      const r = await this.sb.from('events').select('*').in('id', need.slice(i, i + 80));
+      const r = await this.sb.from('fg_events').select('*').in('id', need.slice(i, i + 80));
       err(r.error);
       for (const e of r.data ?? []) events[e.id] = mapEvent(e);
     }
@@ -173,12 +167,12 @@ export class SupabaseBackend implements Backend {
   }
 
   async placeBet(groupId: string, match: any, pick: any, stake: number) {
-    const { error } = await this.sb.rpc('place_bet', { p_group: groupId, p_event: matchToStored(match), p_pick: pick, p_stake: stake });
+    const { error } = await this.sb.rpc('fg_place_bet', { p_group: groupId, p_event: matchToStored(match), p_pick: pick, p_stake: stake });
     err(error);
   }
 
   async createChallenge(groupId: string, match: any, pick: any, odds: number, stake: number, targetId: string | null, message: string) {
-    const { error } = await this.sb.rpc('create_challenge', {
+    const { error } = await this.sb.rpc('fg_create_challenge', {
       p_group: groupId,
       p_event: matchToStored(match),
       p_pick: pick,
@@ -191,17 +185,17 @@ export class SupabaseBackend implements Backend {
   }
 
   async acceptChallenge(id: string) {
-    const { error } = await this.sb.rpc('accept_challenge', { p_id: id });
+    const { error } = await this.sb.rpc('fg_accept_challenge', { p_id: id });
     err(error);
   }
 
   async cancelChallenge(id: string) {
-    const { error } = await this.sb.rpc('cancel_challenge', { p_id: id });
+    const { error } = await this.sb.rpc('fg_cancel_challenge', { p_id: id });
     err(error);
   }
 
   async settleEvent(eventId: string, result: any, homeScore?: string, awayScore?: string) {
-    const { error } = await this.sb.rpc('settle_event', {
+    const { error } = await this.sb.rpc('fg_settle_event', {
       p_event_id: eventId,
       p_result: result,
       p_home_score: homeScore ?? null,
@@ -211,7 +205,7 @@ export class SupabaseBackend implements Backend {
   }
 
   async createCustomEvent(groupId: string, i: any) {
-    const { data, error } = await this.sb.rpc('create_custom_event', {
+    const { data, error } = await this.sb.rpc('fg_create_custom_event', {
       p_group: groupId,
       p_title: i.title,
       p_home: i.home,
@@ -225,12 +219,12 @@ export class SupabaseBackend implements Backend {
   }
 
   async adjustBalance(groupId: string, userId: string, amount: number) {
-    const { error } = await this.sb.rpc('adjust_balance', { p_group: groupId, p_user: userId, p_amount: amount });
+    const { error } = await this.sb.rpc('fg_adjust_balance', { p_group: groupId, p_user: userId, p_amount: amount });
     err(error);
   }
 
   async setRole(groupId: string, userId: string, role: 'admin' | 'member') {
-    const { error } = await this.sb.rpc('set_member_role', { p_group: groupId, p_user: userId, p_role: role });
+    const { error } = await this.sb.rpc('fg_set_member_role', { p_group: groupId, p_user: userId, p_role: role });
     err(error);
   }
 }

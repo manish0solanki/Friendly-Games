@@ -34,8 +34,8 @@ Open http://localhost:5173. With no database configured, the app runs in **Demo 
 ## 2. Set up the free database (about 5 minutes)
 
 1. Create a free account at https://supabase.com and click **New project**.
-2. Go to **SQL Editor → New query**, paste in all of [`supabase/schema.sql`](supabase/schema.sql) and click **Run**.
-3. Go to **Authentication → Sign In / Providers → Email** and turn **off** "Confirm email". Players sign in with a username and password, so there are no emails to confirm.
+2. Go to **SQL Editor → New query**, paste in all of [`supabase/schema.sql`](supabase/schema.sql) and click **Run**. Everything is prefixed `fg_`, so it is safe to add to a project that already runs another app.
+3. Players sign up with a username and password through the `fg_sign_up` database function, which creates a ready-to-use login. There is no confirmation email, and you don't need to change any Auth settings.
 4. Go to **Project Settings → API** and copy the **Project URL** and the **anon / publishable key**. The anon key is meant to be public; row-level security protects the data.
 5. For local development, copy `.env.example` to `.env.local` and fill in both values.
 

@@ -102,14 +102,13 @@ async function fetchCricket(): Promise<Match[]> {
 export async function fetchMatch(id: string): Promise<Match | null> {
   const ids = parseEventId(id);
   if (!ids) return null;
-  // The day's scoreboard carries the live clock and in-play odds; the summary is the fallback.
-  if (!ids.leagueKey.startsWith('cricket/')) {
-    try {
-      const m = (await fetchLeague(ids.leagueKey, 'live')).find((x) => x.id === id);
-      if (m) return m;
-    } catch {
-      /* fall through */
-    }
+  // The day's scoreboard (or the cricket feed) carries the live clock and in-play odds; the summary is the fallback.
+  try {
+    const key = ids.leagueKey.startsWith('cricket/') ? 'cricket/all' : ids.leagueKey;
+    const m = (await fetchLeague(key, 'live')).find((x) => x.id === id);
+    if (m) return m;
+  } catch {
+    /* fall through */
   }
   try {
     const m = parseSummary(await getJson(`${SITE}/${ids.leagueKey}/summary?event=${ids.eventId}`), id);

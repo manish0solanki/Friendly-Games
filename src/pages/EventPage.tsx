@@ -100,10 +100,24 @@ export function EventPage() {
         : !match.liveOdds
           ? hasLiveRules(match.sport)
             ? 'Live prices are suspended for a moment — this usually happens just after a goal or score. Checking again every 15 seconds…'
-            : 'There are no in-play odds for this sport, so live betting isn’t available. You can still challenge a friend below.'
+            : match.sport === 'cricket'
+              ? 'In-play odds will appear once the scorecard has enough to go on (after the first ball). You can still challenge a friend below.'
+              : 'There are no in-play odds for this sport, so live betting isn’t available. You can still challenge a friend below.'
           : !match.liveOpen
-            ? 'In-play betting has closed for this match (football closes at 80′, NBA/NFL at the 4th quarter, NHL at the 3rd period, MLB after the 6th).'
+            ? match.sport === 'cricket'
+              ? 'In-play betting has closed — the result is all but certain.'
+              : 'In-play betting has closed for this match (football closes at 80′, NBA/NFL at the 4th quarter, NHL at the 3rd period, MLB after the 6th).'
             : null;
+  const cricketNote =
+    match.sport === 'cricket'
+      ? match.cricketFormat === 'test'
+        ? 'Test / multi-day match: three outcomes — a draw is possible.'
+        : match.cricketFormat === 't20'
+          ? 'T20 match.'
+          : match.cricketFormat === 'odi'
+            ? 'One-day match.'
+            : null
+      : null;
   const colors = { home: '#3b82f6', draw: '#94a3b8', away: '#f97316' };
   const showScore = match.state !== 'pre' && (match.home.score != null || match.away.score != null);
 
@@ -176,10 +190,17 @@ export function EventPage() {
               )}
               <div className="dim" style={{ fontSize: 12, marginTop: 12 }}>
                 {liveOpen
-                  ? `In-play prices come from a live bookmaker feed. Live bets confirm after ${CONFIRM_SECONDS} seconds if the score hasn’t changed; betting pauses for a minute after every goal or score.`
+                  ? match.sport === 'cricket'
+                    ? `In-play odds are calculated from the live scorecard by our cricket model (runs, wickets, overs${match.cricketFormat === 'test' ? ', lead and days left' : ' and target'}). Live bets confirm after ${CONFIRM_SECONDS} seconds if no wicket falls; betting pauses for a minute after every wicket.`
+                    : `In-play prices come from a live bookmaker feed. Live bets confirm after ${CONFIRM_SECONDS} seconds if the score hasn’t changed; betting pauses for a minute after every goal or score.`
                   : liveClosedReason ??
                     'The group line starts from bookmaker odds where available and moves as your friends bet. Your odds lock when you place.'}
               </div>
+              {cricketNote && (
+                <div className="dim" style={{ fontSize: 12, marginTop: 6 }}>
+                  🏏 {cricketNote}
+                </div>
+              )}
             </div>
           </div>
 

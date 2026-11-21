@@ -78,7 +78,9 @@ function CashOutModal({ target, onClose }: { target: CashOutTarget; onClose(): v
         </div>
         <div className="co-teams">
           <span>{event.home.name}</span>
-          <b className="co-score">{p ? `${p.homeScore ?? '-'} – ${p.awayScore ?? '-'}` : '…'}</b>
+          <b className={`co-score ${`${p?.homeScore ?? ''}${p?.awayScore ?? ''}`.length > 8 ? 'long' : ''}`}>
+            {p ? `${p.homeScore ?? '-'} – ${p.awayScore ?? '-'}` : '…'}
+          </b>
           <span>{event.away.name}</span>
         </div>
         {p && (

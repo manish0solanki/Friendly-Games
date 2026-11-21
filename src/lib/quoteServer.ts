@@ -1,5 +1,5 @@
 /* Server-only: build and sign a match "quote" (score, clock, live odds, result). Used by api/quote.ts and api/tick.ts. */
-import { SITE, allowDrawFor, parseEventId, parseScoreboard, parseSummary, ymd } from './espnParse';
+import { HEADER, SITE, allowDrawFor, parseCricketHeader, parseEventId, parseScoreboard, parseSummary, ymd } from './espnParse';
 import { findLeague } from './sports';
 import type { Match } from './types';
 import type { Quote, QuotePayload } from './quote';
@@ -32,6 +32,15 @@ async function findMatch(id: string, start: number): Promise<Match | null> {
       }
     }
   }
+  if (ids.leagueKey.startsWith('cricket/')) {
+    // the cricket feed has the day number and match dates the in-play model needs
+    try {
+      const m = parseCricketHeader(await getJson(`${HEADER}?sport=cricket&lang=en&region=in`)).find((x) => x.id === id);
+      if (m) return m;
+    } catch {
+      /* fall back to the match summary */
+    }
+  }
   return parseSummary(await getJson(`${SITE}/${ids.leagueKey}/summary?event=${ids.eventId}`), id);
 }
 
@@ -57,7 +66,8 @@ export async function buildQuote(id: string, start: number, secret: string): Pro
     period: m.period ?? 0,
     clock: m.clock ?? null,
     status: m.statusText,
-    score: `${m.home.score ?? ''}-${m.away.score ?? ''}`,
+    // what counts as a "score change" for the betting pause: goals/points, or wickets in cricket
+    score: m.stateKey ?? `${m.home.score ?? ''}-${m.away.score ?? ''}`,
     homeScore: m.home.score ?? null,
     awayScore: m.away.score ?? null,
     result: m.result ?? null,

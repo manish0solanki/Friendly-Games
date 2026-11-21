@@ -2,6 +2,15 @@
 import { findLeague } from './sports';
 import { defaultProbs, moneylineToProb } from './odds';
 import type { Match, MatchState, Result, Team } from './types';
+import {
+  cricketStateKey,
+  cricketWinProbabilities,
+  detectFormat,
+  parseCricketScore,
+  scheduledDays,
+  type CricketFormat,
+  type CricketState,
+} from './cricketModel';
 
 export const SITE = 'https://site.api.espn.com/apis/site/v2/sports';
 export const HEADER = 'https://site.web.api.espn.com/apis/v2/scoreboard/header';
@@ -56,7 +65,8 @@ export function parseSummary(data: any, id: string, leagueName?: string): Match 
   const comp = comps.find((c) => String(c.id) === ids.compId) ?? (comps.length === 1 ? comps[0] : undefined);
   if (!comp) return null;
   const name = leagueName ?? league?.name ?? data?.header?.league?.name ?? ids.leagueKey;
-  return parseCompetition(ids.leagueKey, name, { id: ids.eventId }, comp, allowDrawFor(ids.leagueKey));
+  // the header's description carries the dates ("Nov 19-23 2026"), which multi-day cricket needs
+  return parseCompetition(ids.leagueKey, name, { id: ids.eventId, description: data?.header?.description }, comp, allowDrawFor(ids.leagueKey));
 }
 
 export function allowDrawFor(leagueKey: string): boolean {
@@ -81,7 +91,8 @@ function parseTeam(c: any): Team {
   return { name, short, logo, score };
 }
 
-function parseCompetition(leagueKey: string, leagueName: string, ev: any, comp: any, allowDraw: boolean): Match | null {
+function parseCompetition(leagueKey: string, leagueName: string, ev: any, comp: any, allowDrawIn: boolean): Match | null {
+  let allowDraw = allowDrawIn;
   const cs: any[] = comp?.competitors ?? ev?.competitors ?? [];
   if (cs.length !== 2) return null;
   const homeC = cs.find((c) => c.homeAway === 'home') ?? cs[0];
@@ -95,20 +106,37 @@ function parseCompetition(leagueKey: string, leagueName: string, ev: any, comp: 
   const state: MatchState = (type.state ?? (typeof ev?.status === 'string' ? ev.status : 'pre')) as MatchState;
   const startTime = comp?.date ?? comp?.startDate ?? ev?.date ?? new Date().toISOString();
   const statusText = state === 'pre' ? '' : type.shortDetail ?? type.detail ?? ev?.summary ?? (state === 'post' ? 'FT' : 'Live');
+  const sport = leagueKey.split('/')[0];
+
+  // cricket: Tests can be drawn; limited-overs can't
+  const format = sport === 'cricket' ? detectFormat(comp?.class ?? ev?.class, comp?.limitedOvers ?? ev?.limitedOvers, [home.score ?? '', away.score ?? '']) : undefined;
+  if (format) allowDraw = format === 'test';
 
   let result: Result | undefined;
   const typeName = String(type.name ?? '');
   if (VOID_STATUS.test(typeName) || VOID_STATUS.test(String(type.description ?? ''))) result = 'void';
   else if (state === 'post') {
     if (type.completed === false) result = 'void';
+    else if (format) result = isWinner(homeC) ? 'home' : isWinner(awayC) ? 'away' : format === 'test' ? 'draw' : 'void';
     else result = decideWinner(homeC, awayC, home, away, allowDraw);
   }
 
-  const sport = leagueKey.split('/')[0];
   const period = typeof status === 'object' ? Number(status.period ?? comp?.status?.period ?? 0) || 0 : 0;
   const clock = typeof status === 'object' && status.clock != null ? Number(status.clock) : undefined;
   const live = state === 'in' && !result;
-  const liveOdds = live ? parseLiveOdds(comp, allowDraw) : undefined;
+  let liveOdds = live ? parseLiveOdds(comp, allowDraw) : undefined;
+  let liveOpen = live && !!liveOdds && liveWindowOpen(sport, period, clock, typeName);
+  let stateKey: string | undefined;
+  if (format && live) {
+    // no bookmaker odds for cricket: build them from the scorecard
+    const cs = cricketState(format, ev, comp, homeC, awayC, home, away, startTime, statusText);
+    const probs = cricketWinProbabilities(cs);
+    stateKey = cricketStateKey(cs);
+    if (probs) {
+      liveOdds = probs.map((p) => (p > 0 ? Math.min(50, Math.round((1 / p) * 100) / 100) : 0)) as [number, number, number];
+      liveOpen = Math.max(...probs) < 0.95; // close once the result is all but certain
+    }
+  }
   return {
     id: makeEventId(leagueKey, String(ev?.id ?? comp?.id), String(comp?.id ?? ev?.id)),
     sport,
@@ -127,9 +155,32 @@ function parseCompetition(leagueKey: string, leagueName: string, ev: any, comp: 
     period,
     clock,
     liveOdds,
-    liveOpen: live && !!liveOdds && liveWindowOpen(sport, period, clock, typeName),
+    liveOpen,
     challengeOpen: live && (hasLiveRules(sport) ? liveWindowOpen(sport, period, clock, typeName) : true),
+    stateKey,
+    cricketFormat: format,
   };
+}
+
+function cricketState(format: CricketFormat, ev: any, comp: any, homeC: any, awayC: any, home: Team, away: Team, startTime: string, statusText: string): CricketState {
+  const full = ev?.fullStatus ?? comp?.fullStatus ?? {};
+  const battingId = String(full.battingTeamId ?? comp?.status?.battingTeamId ?? '');
+  const team = (c: any, t: Team) => {
+    const innings = parseCricketScore(t.score);
+    const last = innings[innings.length - 1];
+    const inferred = !!last && last.overs != null && last.wkts < 10 && !last.declared;
+    return { innings, order: Number(c?.order) || 0, batting: battingId && battingId !== '0' ? String(c?.id) === battingId : inferred };
+  };
+  const s: CricketState = { format, home: team(homeC, home), away: team(awayC, away) };
+  if (s.home.batting && s.away.batting) s.away.batting = false;
+  if (format === 'test') {
+    const intl = String((comp?.class ?? ev?.class)?.internationalClassId ?? '') === '1';
+    s.days = scheduledDays(ev?.description ?? comp?.description, intl ? 5 : 4);
+    const dayNo = Number(full.dayNumber ?? comp?.status?.dayNumber);
+    s.day = dayNo > 0 ? dayNo : Math.floor((Date.now() - Date.parse(startTime)) / 864e5) + 1;
+    s.stumps = /stumps|close of play/i.test(`${statusText} ${ev?.summary ?? ''} ${full?.type?.description ?? ''}`);
+  }
+  return s;
 }
 
 /**

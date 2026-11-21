@@ -30,6 +30,10 @@ export interface Match {
   liveOpen?: boolean;
   /** In-play head-to-head challenges allowed. */
   challengeOpen?: boolean;
+  /** Key that changes on "big" events only (goals; wickets in cricket) — drives the betting pause. */
+  stateKey?: string;
+  /** Cricket only. Tests have a draw; T20/ODI don't. */
+  cricketFormat?: 't20' | 'odi' | 'test';
 }
 
 export interface Team {

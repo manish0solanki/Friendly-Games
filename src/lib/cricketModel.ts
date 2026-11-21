@@ -172,18 +172,21 @@ function multiDay(s: CricketState): [number, number, number] | null {
   const toBat = sides.map((t) => Math.max(0, 2 - t.innings.length));
   const future = sides.map((_, i) => (i === batIdx ? runsInHand(10 - wktsLeft) : 0) + toBat[i] * FULL_INNINGS);
   let oversNeeded = (batIdx >= 0 ? wktsLeft * 8 : 0);
-  sides.forEach((_t, i) => {
+  sides.forEach((t, i) => {
     if (!toBat[i]) return;
     const opp = 1 - i;
-    if (toBat[i] === 1 && sides[opp].innings.length === 2) {
-      // this side bats last: it only needs to chase whatever lead the other side ends up with
-      const target = runs[opp] + future[opp] - runs[i] + 1;
+    // Who bats last? Normally the side that batted second (A1, B1, A2, B2) — or the other side after a follow-on.
+    const batsLast = toBat[i] === 1 && (sides[opp].innings.length === 2 || (t.order === 2 && toBat[opp] <= 1));
+    if (batsLast) {
+      // it only needs time to chase whatever is left — and none at all if it's already far enough ahead
+      const target = runs[opp] + future[opp] - (runs[i] + future[i] - FULL_INNINGS) + 1;
       oversNeeded += target <= 0 ? 0 : Math.min(95, target / 3.2);
     } else oversNeeded += toBat[i] * 95;
   });
   const pResult = sigmoid((oversLeft - 0.75 * oversNeeded) / 60);
   const adv = runs[0] + future[0] - (runs[1] + future[1]);
-  const pHome = sigmoid(adv / 100);
+  // the more cricket still to be played, the less a lead tells us
+  const pHome = sigmoid(adv / (60 + 0.18 * (future[0] + future[1])));
   return [pResult * pHome, pResult * (1 - pHome), 1 - pResult];
 }
 

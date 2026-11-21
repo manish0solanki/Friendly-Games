@@ -63,7 +63,7 @@ export function OddsButtons({ match, big }: { match: Match; big?: boolean }) {
   );
 }
 
-export function MatchRow({ m }: { m: Match }) {
+export function MatchRow({ m, showLeague }: { m: Match; showLeague?: boolean }) {
   const { data } = useApp();
   const { day, time } = kickoff(m.startTime);
   const betCount = data ? data.bets.filter((b) => b.eventId === m.id).length + data.challenges.filter((c) => c.eventId === m.id && c.status !== 'cancelled').length : 0;
@@ -101,6 +101,11 @@ export function MatchRow({ m }: { m: Match }) {
           );
         })}
         <div className="m-meta">
+          {showLeague && (
+            <span>
+              {sportIcon(m.sport)} {m.league}
+            </span>
+          )}
           {betCount > 0 && <span style={{ color: 'var(--accent)' }}>● {betCount} in your group</span>}
           <span>More markets ›</span>
         </div>
@@ -111,34 +116,59 @@ export function MatchRow({ m }: { m: Match }) {
 }
 
 export function LeagueBlock({ title, sport, matches }: { title: string; sport: string; matches: Match[] }) {
-  const cols = matches.some((m) => m.allowDraw) ? 3 : 2;
+  return <ListBlock icon={sportIcon(sport)} title={title} matches={matches} />;
+}
+
+/** A card of match rows. With `showLeague`, each row names its competition (for mixed lists). */
+export function ListBlock({ icon, title, matches, showLeague }: { icon: string; title: string; matches: Match[]; showLeague?: boolean }) {
+  const colSet = new Set(matches.map((m) => (m.allowDraw ? 3 : 2)));
+  const cols = colSet.size === 1 ? [...colSet][0] : 0; // mixed 2- and 3-way markets: buttons carry their own labels
   return (
     <div className="card league-block">
       <div className="league-head">
-        <span>{sportIcon(sport)}</span>
+        <span>{icon}</span>
         <span>{title}</span>
         <span className="dim" style={{ fontWeight: 600 }}>
           {matches.length}
         </span>
-        <div className="mk" style={{ ['--cols' as any]: cols }}>
-          {cols === 3 ? (
-            <>
-              <span>1</span>
-              <span>X</span>
-              <span>2</span>
-            </>
-          ) : (
-            <>
-              <span>1</span>
-              <span>2</span>
-            </>
-          )}
-        </div>
+        {cols > 0 && (
+          <div className="mk" style={{ ['--cols' as any]: cols }}>
+            {cols === 3 ? (
+              <>
+                <span>1</span>
+                <span>X</span>
+                <span>2</span>
+              </>
+            ) : (
+              <>
+                <span>1</span>
+                <span>2</span>
+              </>
+            )}
+          </div>
+        )}
       </div>
       {matches.map((m) => (
-        <MatchRow key={m.id} m={m} />
+        <MatchRow key={m.id} m={m} showLeague={showLeague} />
       ))}
     </div>
+  );
+}
+
+/** Upcoming matches in kick-off order, one card per day. */
+export function DayGroupedMatches({ matches }: { matches: Match[] }) {
+  const days = new Map<string, Match[]>();
+  for (const m of matches) {
+    const d = kickoff(m.startTime).day;
+    if (!days.has(d)) days.set(d, []);
+    days.get(d)!.push(m);
+  }
+  return (
+    <>
+      {[...days.entries()].map(([d, ms]) => (
+        <ListBlock key={d} icon="📅" title={d} matches={ms} showLeague />
+      ))}
+    </>
   );
 }
 

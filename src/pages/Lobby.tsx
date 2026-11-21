@@ -2,10 +2,10 @@ import { useMemo, useState } from 'react';
 import { Link, useParams, useSearchParams } from 'react-router-dom';
 import { useApp, useLeagues } from '../lib/store';
 import { FEATURED_LEAGUES, findSport, SPORTS } from '../lib/sports';
-import { storedToMatch } from '../lib/util';
+import { lineFor, storedToMatch } from '../lib/util';
 import type { Match } from '../lib/types';
 import { Coins, Empty, SkeletonRows } from '../components/bits';
-import { GroupedMatches } from '../components/MatchList';
+import { DayGroupedMatches, GroupedMatches, ListBlock } from '../components/MatchList';
 
 type When = 'upcoming' | 'live' | 'results';
 
@@ -46,6 +46,148 @@ function filterWhen(ms: Match[], when: When): Match[] {
   return ms.filter((m) => m.state === 'pre');
 }
 
+// ---- upcoming: sort & filter ---------------------------------------------------
+type SortBy = 'time' | 'league' | 'popular' | 'closest';
+type DayFilter = 'all' | 'today' | 'tomorrow' | '3days';
+interface UpcomingPrefs {
+  sort: SortBy;
+  day: DayFilter;
+  sport: string;
+  q: string;
+}
+const PREFS_KEY = 'fg-upcoming-prefs';
+const DEFAULT_PREFS: UpcomingPrefs = { sort: 'time', day: 'all', sport: 'all', q: '' };
+
+function loadPrefs(): UpcomingPrefs {
+  try {
+    return { ...DEFAULT_PREFS, ...JSON.parse(localStorage.getItem(PREFS_KEY) ?? '{}'), q: '' };
+  } catch {
+    return DEFAULT_PREFS;
+  }
+}
+
+const SORTS: { key: SortBy; label: string }[] = [
+  { key: 'time', label: '🕒 Time' },
+  { key: 'league', label: '🏆 League' },
+  { key: 'popular', label: '🔥 Popular' },
+  { key: 'closest', label: '⚖️ Closest odds' },
+];
+const DAYS: { key: DayFilter; label: string }[] = [
+  { key: 'all', label: 'All' },
+  { key: 'today', label: 'Today' },
+  { key: 'tomorrow', label: 'Tomorrow' },
+  { key: '3days', label: 'Next 3 days' },
+];
+
+function dayStart(offset: number): number {
+  const d = new Date();
+  d.setHours(0, 0, 0, 0);
+  d.setDate(d.getDate() + offset);
+  return d.getTime();
+}
+
+function inDay(m: Match, day: DayFilter): boolean {
+  if (day === 'all') return true;
+  const t = Date.parse(m.startTime);
+  if (day === 'today') return t < dayStart(1);
+  if (day === 'tomorrow') return t >= dayStart(1) && t < dayStart(2);
+  return t < dayStart(3);
+}
+
+function UpcomingToolbar({ prefs, setPrefs, sports }: { prefs: UpcomingPrefs; setPrefs(p: UpcomingPrefs): void; sports: string[] }) {
+  const set = (patch: Partial<UpcomingPrefs>) => setPrefs({ ...prefs, ...patch });
+  return (
+    <div className="toolbar card">
+      <div className="toolbar-row">
+        <span className="toolbar-label">Sort</span>
+        <div className="chips">
+          {SORTS.map((o) => (
+            <button key={o.key} className={`chip sm ${prefs.sort === o.key ? 'active' : ''}`} onClick={() => set({ sort: o.key })}>
+              {o.label}
+            </button>
+          ))}
+        </div>
+      </div>
+      <div className="toolbar-row">
+        <span className="toolbar-label">When</span>
+        <div className="chips">
+          {DAYS.map((o) => (
+            <button key={o.key} className={`chip sm ${prefs.day === o.key ? 'active' : ''}`} onClick={() => set({ day: o.key })}>
+              {o.label}
+            </button>
+          ))}
+        </div>
+      </div>
+      <div className="toolbar-row">
+        <input className="input sm" placeholder="🔍 Search team or league" value={prefs.q} onChange={(e) => set({ q: e.target.value })} />
+        {sports.length > 1 && (
+          <select className="input sm" style={{ maxWidth: 180 }} value={sports.includes(prefs.sport) ? prefs.sport : 'all'} onChange={(e) => set({ sport: e.target.value })}>
+            <option value="all">All sports</option>
+            {sports.map((k) => (
+              <option key={k} value={k}>
+                {k === 'custom' ? '⭐ Group specials' : `${findSport(k)?.icon ?? ''} ${findSport(k)?.name ?? k}`}
+              </option>
+            ))}
+          </select>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function UpcomingList({ matches }: { matches: Match[] }) {
+  const { data } = useApp();
+  const [prefs, setPrefsState] = useState<UpcomingPrefs>(loadPrefs);
+  const setPrefs = (p: UpcomingPrefs) => {
+    setPrefsState(p);
+    try {
+      localStorage.setItem(PREFS_KEY, JSON.stringify({ ...p, q: '' }));
+    } catch {
+      /* ignore */
+    }
+  };
+  const sports = useMemo(() => [...new Set(matches.map((m) => m.sport))], [matches]);
+  const q = prefs.q.trim().toLowerCase();
+  const filtered = matches.filter(
+    (m) =>
+      inDay(m, prefs.day) &&
+      (prefs.sport === 'all' || m.sport === prefs.sport || !sports.includes(prefs.sport)) &&
+      (!q || `${m.home.name} ${m.away.name} ${m.league}`.toLowerCase().includes(q)),
+  );
+  const activity = (id: string) =>
+    data ? data.bets.filter((b) => b.eventId === id).length + data.challenges.filter((c) => c.eventId === id && c.status !== 'cancelled').length : 0;
+  // how evenly matched: gap between the two sides' implied chances (smaller = closer)
+  const closeness = (m: Match) => {
+    const l = lineFor(m, data);
+    return Math.abs(1 / l[0] - 1 / l[1]);
+  };
+
+  let body;
+  if (!filtered.length) {
+    body = (
+      <div className="card">
+        <Empty icon="🔍" title="No matches match these filters">
+          Try another day, sport or search.
+        </Empty>
+      </div>
+    );
+  } else if (prefs.sort === 'league') body = <GroupedMatches matches={filtered} />;
+  else if (prefs.sort === 'popular') {
+    const ms = [...filtered].sort((a, b) => activity(b.id) - activity(a.id) || a.startTime.localeCompare(b.startTime));
+    body = <ListBlock icon="🔥" title="Most popular in your group" matches={ms} showLeague />;
+  } else if (prefs.sort === 'closest') {
+    const ms = [...filtered].sort((a, b) => closeness(a) - closeness(b) || a.startTime.localeCompare(b.startTime));
+    body = <ListBlock icon="⚖️" title="Closest contests first" matches={ms} showLeague />;
+  } else body = <DayGroupedMatches matches={filtered} />;
+
+  return (
+    <>
+      <UpcomingToolbar prefs={prefs} setPrefs={setPrefs} sports={sports} />
+      {body}
+    </>
+  );
+}
+
 function MatchesView({
   leagues,
   defaultWhen = 'upcoming',
@@ -70,6 +212,8 @@ function MatchesView({
           <SkeletonRows />
           <SkeletonRows n={3} />
         </>
+      ) : when === 'upcoming' && shown.length ? (
+        <UpcomingList matches={shown} />
       ) : shown.length ? (
         <GroupedMatches matches={shown} />
       ) : (

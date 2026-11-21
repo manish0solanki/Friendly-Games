@@ -17,7 +17,7 @@ export default async function handler(req: Request): Promise<Response> {
     const body = await r.text();
     return new Response(body, {
       status: r.status,
-      headers: { ...json, 'cache-control': r.ok ? 'public, s-maxage=30, stale-while-revalidate=120' : 'no-store' },
+      headers: { ...json, 'cache-control': r.ok ? 'public, s-maxage=20, stale-while-revalidate=10' : 'no-store' },
     });
   } catch (e) {
     return new Response(JSON.stringify({ error: String(e) }), { status: 502, headers: { ...json, 'cache-control': 'no-store' } });

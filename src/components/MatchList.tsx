@@ -2,6 +2,7 @@ import { Link } from 'react-router-dom';
 import { useApp } from '../lib/store';
 import { formatOdds } from '../lib/odds';
 import { sportIcon } from '../lib/sports';
+import { hasLiveRules } from '../lib/espnParse';
 import { eventPath, isBettable, isLiveBettable, kickoff, lineFor } from '../lib/util';
 import type { Match, Outcome } from '../lib/types';
 import { TeamLogo } from './bits';
@@ -23,7 +24,9 @@ export function OddsButtons({ match, big }: { match: Match; big?: boolean }) {
   const idx = { home: 0, away: 1, draw: 2 } as const;
   if (match.state === 'in' && !live && !big) {
     const why = !match.liveOdds
-      ? 'No in-play odds'
+      ? hasLiveRules(match.sport)
+        ? 'Odds suspended'
+        : 'No in-play odds'
       : !group?.liveBetting
         ? 'Live betting off'
         : 'In-play closed';

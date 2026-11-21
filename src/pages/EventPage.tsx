@@ -2,6 +2,8 @@ import { useEffect, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import { useApp } from '../lib/store';
 import { fetchMatch } from '../lib/espn';
+import { hasLiveRules } from '../lib/espnParse';
+import { fetchQuote, hasQuotes } from '../lib/quote';
 import { fmtCoins, formatOdds, stakesFor } from '../lib/odds';
 import { sportIcon } from '../lib/sports';
 import { ago, isBettable, isLiveBettable, kickoff, pickLabel, storedToMatch } from '../lib/util';
@@ -14,7 +16,7 @@ import { ChallengeCard } from './Challenges';
 export function EventPage() {
   const { id: rawId = '' } = useParams();
   const id = decodeURIComponent(rawId);
-  const { data, user, oddsFormat, reportMatches, group } = useApp();
+  const { data, user, oddsFormat, reportMatches, group, backend } = useApp();
   const stored = data?.events[id];
   const [live, setLive] = useState<Match | null>(null);
   const [loading, setLoading] = useState(true);
@@ -41,6 +43,43 @@ export function EventPage() {
     };
   }, [id, reportMatches]);
 
+  // While a match is live, poll the uncached signed live state every 15s so prices and the score stay fresh
+  // (bookmakers suspend prices for a moment after goals; this picks them back up quickly).
+  const isLive = live?.state === 'in';
+  useEffect(() => {
+    if (!isLive || !hasQuotes(id) || backend.mode !== 'online') return;
+    let alive = true;
+    const poll = async () => {
+      try {
+        const q = (await fetchQuote(id, live!.startTime)).payload;
+        if (!alive) return;
+        setLive((m) =>
+          m
+            ? {
+                ...m,
+                state: q.state,
+                statusText: q.status || m.statusText,
+                home: { ...m.home, score: q.homeScore ?? m.home.score },
+                away: { ...m.away, score: q.awayScore ?? m.away.score },
+                liveOdds: q.odds ?? undefined,
+                liveOpen: q.liveOpen,
+                challengeOpen: q.challengeOpen,
+                result: q.result ?? undefined,
+              }
+            : m,
+        );
+      } catch {
+        /* keep the last known state */
+      }
+    };
+    poll();
+    const t = setInterval(poll, 15_000);
+    return () => {
+      alive = false;
+      clearInterval(t);
+    };
+  }, [id, isLive, backend]); // eslint-disable-line react-hooks/exhaustive-deps
+
   const match: Match | null = live ? { ...live, baseProbs: stored?.baseProbs ?? live.baseProbs } : stored ? storedToMatch(stored) : null;
   if (!match) return loading ? <div className="skeleton" style={{ height: 220 }} /> : <Empty icon="🔎" title="Event not found" />;
 
@@ -59,7 +98,9 @@ export function EventPage() {
       : !group?.liveBetting
         ? 'Live betting is turned off for this group (admins can switch it on in Group).'
         : !match.liveOdds
-          ? 'No live prices for this match, so in-play betting is closed.'
+          ? hasLiveRules(match.sport)
+            ? 'Live prices are suspended for a moment — this usually happens just after a goal or score. Checking again every 15 seconds…'
+            : 'There are no in-play odds for this sport, so live betting isn’t available. You can still challenge a friend below.'
           : !match.liveOpen
             ? 'In-play betting has closed for this match (football closes at 80′, NBA/NFL at the 4th quarter, NHL at the 3rd period, MLB after the 6th).'
             : null;
@@ -107,7 +148,11 @@ export function EventPage() {
               Match result <span className="pill">{match.allowDraw ? '1X2' : 'Moneyline'}</span>
               {liveOpen && <span className="live-tag">● IN-PLAY</span>}
               <span className="spacer" />
-              {!open && !liveOpen && <span className="dim" style={{ fontWeight: 600, fontSize: 12 }}>Closed</span>}
+              {!open && !liveOpen && (
+                <span className="dim" style={{ fontWeight: 600, fontSize: 12 }}>
+                  {match.state === 'in' && !match.liveOdds && hasLiveRules(match.sport) && group?.liveBetting ? 'Suspended' : 'Closed'}
+                </span>
+              )}
             </div>
             <div className="market-body">
               <OddsButtons match={match} big />

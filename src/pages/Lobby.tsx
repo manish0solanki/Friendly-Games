@@ -40,7 +40,8 @@ function WhenTabs({ when, setWhen, counts }: { when: When; setWhen(w: When): voi
 }
 
 function filterWhen(ms: Match[], when: When): Match[] {
-  if (when === 'live') return ms.filter((m) => m.state === 'in');
+  // matches you can bet on in-play come first; long-running cricket etc. go below
+  if (when === 'live') return ms.filter((m) => m.state === 'in').sort((a, b) => Number(!!b.liveOpen) - Number(!!a.liveOpen));
   if (when === 'results') return ms.filter((m) => m.state === 'post').reverse();
   return ms.filter((m) => m.state === 'pre');
 }

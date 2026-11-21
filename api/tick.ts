@@ -1,6 +1,6 @@
-// Runs every minute (scheduled from Supabase with pg_cron + pg_net), so nothing depends on
+// Runs every 10 seconds (scheduled from Supabase with pg_cron + pg_net), so nothing depends on
 // someone's phone being open:
-//   * confirms or rejects live bets and cash outs that have waited 60 seconds
+//   * confirms or rejects live bets and cash outs that have waited 30 seconds
 //   * settles finished matches that still have open bets or challenges
 // Each action carries a freshly signed quote, so this endpoint can't be used to fake anything.
 import { buildQuote, serverEnv } from '../src/lib/quoteServer';
@@ -39,7 +39,9 @@ export default async function handler(): Promise<Response> {
   } catch (e) {
     return new Response(JSON.stringify({ error: String(e) }), { status: 500, headers: json });
   }
-  for (const d of due.slice(0, 25)) {
+  // confirmations every run (every 10s); settlement checks once a minute is plenty
+  const settleRound = new Date().getUTCSeconds() < 10;
+  for (const d of due.filter((x) => x.needs_confirm || settleRound).slice(0, 25)) {
     try {
       const q = await buildQuote(d.id, Date.parse(d.start_time), secret);
       const arg = { p: q.p, sig: q.sig };
@@ -47,7 +49,7 @@ export default async function handler(): Promise<Response> {
         const n = await rpc('fg_confirm_pending', { p_event_id: d.id, p_quote: arg });
         log.push(`${d.id}: confirmed ${n} (score ${q.payload.score})`);
       }
-      if (d.needs_settle && q.payload.result) {
+      if (d.needs_settle && settleRound && q.payload.result) {
         await rpc('fg_settle_event', { p_event_id: d.id, p_quote: arg });
         log.push(`${d.id}: settled ${q.payload.result}`);
       }

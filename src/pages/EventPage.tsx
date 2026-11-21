@@ -3,7 +3,7 @@ import { Link, useParams } from 'react-router-dom';
 import { useApp } from '../lib/store';
 import { fetchMatch } from '../lib/espn';
 import { hasLiveRules } from '../lib/espnParse';
-import { fetchQuote, hasQuotes } from '../lib/quote';
+import { CONFIRM_SECONDS, fetchQuote, hasQuotes } from '../lib/quote';
 import { fmtCoins, formatOdds, stakesFor } from '../lib/odds';
 import { sportIcon } from '../lib/sports';
 import { ago, isBettable, isLiveBettable, kickoff, pickLabel, storedToMatch } from '../lib/util';
@@ -176,7 +176,7 @@ export function EventPage() {
               )}
               <div className="dim" style={{ fontSize: 12, marginTop: 12 }}>
                 {liveOpen
-                  ? 'In-play prices come from a live bookmaker feed. Live bets confirm after 60 seconds if the score hasn’t changed; betting pauses for a minute after every goal or score.'
+                  ? `In-play prices come from a live bookmaker feed. Live bets confirm after ${CONFIRM_SECONDS} seconds if the score hasn’t changed; betting pauses for a minute after every goal or score.`
                   : liveClosedReason ??
                     'The group line starts from bookmaker odds where available and moves as your friends bet. Your odds lock when you place.'}
               </div>

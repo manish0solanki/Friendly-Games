@@ -1,6 +1,7 @@
 import { useEffect, useState, type ReactNode } from 'react';
 import { colorFor } from '../lib/util';
 import { fmtCoins } from '../lib/odds';
+import { CONFIRM_SECONDS } from '../lib/quote';
 
 export function Avatar({ name, size }: { name: string; size?: 'sm' | 'lg' }) {
   return (
@@ -83,7 +84,7 @@ export function useNow(intervalMs = 1000): number {
 /** Live bet / cash out waiting for its 60-second score check. */
 export function ConfirmingNote({ since, what = 'Bet' }: { since: string; what?: string }) {
   const now = useNow();
-  const left = Math.ceil(60 - (now - Date.parse(since)) / 1000);
+  const left = Math.ceil(CONFIRM_SECONDS - (now - Date.parse(since)) / 1000);
   return (
     <div className="confirming-note" aria-live="polite">
       {left > 0 ? (

@@ -301,7 +301,7 @@ begin
     values (p_group, auth.uid(), e.id, p_pick, p_stake, line[v_idx])
     returning * into b;
   else
-    -- in-play: the live bookmaker price from a signed quote; confirmed after 60s if the score holds
+    -- in-play: the live bookmaker price from a signed quote; confirmed after 30s if the score holds
     if e.group_id is not null then raise exception 'Betting has closed for this event'; end if;
     if not exists (select 1 from fg_groups where id = p_group and live_betting) then
       raise exception 'Live betting is turned off in this group';
@@ -519,7 +519,7 @@ begin
   return g;
 end $$;
 
--- Ask to cash out an open bet at the current live price. Confirmed after 60s if the score hasn't changed.
+-- Ask to cash out an open bet at the current live price. Confirmed after 30s if the score hasn't changed.
 create or replace function public.fg_request_cashout(p_bet uuid, p_quote jsonb)
 returns fg_bets language plpgsql security definer set search_path = public as $$
 declare b fg_bets; v jsonb; v_odds numeric;
@@ -542,7 +542,7 @@ begin
   return b;
 end $$;
 
--- Confirms (or rejects) live bets and cash outs that have waited 60s, using a fresh signed quote.
+-- Confirms (or rejects) live bets and cash outs that have waited 30s, using a fresh signed quote.
 -- Accepted only if the score is unchanged since the request — protects against delayed feeds.
 create or replace function public.fg_confirm_pending(p_event_id text, p_quote jsonb)
 returns integer language plpgsql security definer set search_path = public as $$
@@ -550,7 +550,7 @@ declare v jsonb; v_cut timestamptz; v_live boolean; n int;
 begin
   -- no sign-in needed: only our server can produce the signed quote (api/tick.ts runs this every minute)
   v := fg_verify_quote(p_quote, p_event_id, 30);
-  v_cut := to_timestamp((v->>'at')::double precision / 1000) - interval '60 seconds';
+  v_cut := to_timestamp((v->>'at')::double precision / 1000) - interval '30 seconds';
   v_live := v->>'state' = 'in';
   perform fg_apply_quote(p_event_id, v);
 
@@ -577,15 +577,15 @@ begin
   return n;
 end $$;
 
--- What the every-minute job (api/tick.ts) should look at: live bets/cash outs past their 60s wait,
+-- What the every-minute job (api/tick.ts) should look at: live bets/cash outs past their 30s wait,
 -- and started real matches that still have open bets or challenges.
 create or replace function public.fg_due_events()
 returns table (id text, start_time timestamptz, needs_confirm boolean, needs_settle boolean)
 language sql stable security definer set search_path = public as $$
   select e.id, e.start_time,
     exists (select 1 from fg_bets b where b.event_id = e.id
-            and ((b.status = 'pending' and b.created_at <= now() - interval '60 seconds')
-              or (b.status = 'open' and b.cashout_requested_at <= now() - interval '60 seconds'))) as needs_confirm,
+            and ((b.status = 'pending' and b.created_at <= now() - interval '30 seconds')
+              or (b.status = 'open' and b.cashout_requested_at <= now() - interval '30 seconds'))) as needs_confirm,
     e.start_time <= now() - interval '80 minutes'
       and (exists (select 1 from fg_bets b where b.event_id = e.id and b.status in ('open', 'pending'))
         or exists (select 1 from fg_challenges c where c.event_id = e.id and c.status in ('open', 'matched'))) as needs_settle
@@ -703,9 +703,9 @@ revoke all on function public.fg_sign_up(text, text) from public;
 grant execute on function public.fg_sign_up(text, text) to anon, authenticated;
 
 -- ---------------------------------------------------------------- every-minute job
--- Confirms live bets/cash outs and settles finished matches even when nobody has the app open.
+-- Every 10 seconds: confirms live bets/cash outs and settles finished matches even when nobody has the app open.
 -- Replace the URL with your own deployment, then run once:
 --   create extension if not exists pg_net;
 --   create extension if not exists pg_cron;
---   select cron.schedule('friendly-games-tick', '* * * * *',
+--   select cron.schedule('friendly-games-tick', '10 seconds',
 --     $job$ select net.http_get(url := 'https://YOUR-SITE.vercel.app/api/tick', timeout_milliseconds := 25000) $job$);

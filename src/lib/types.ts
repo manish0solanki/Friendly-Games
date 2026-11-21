@@ -64,7 +64,7 @@ export interface Member {
   joinedAt: string;
 }
 
-/** pending = live bet waiting 60s for confirmation; cashed = settled early via cash out. */
+/** pending = live bet waiting 30s for confirmation; cashed = settled early via cash out. */
 export type BetStatus = 'pending' | 'open' | 'won' | 'lost' | 'void' | 'cashed';
 
 export interface Bet {
@@ -81,7 +81,7 @@ export interface Bet {
   settledAt?: string | null;
   /** Placed in-play at a live bookmaker price. */
   live?: boolean;
-  /** A cash out waiting for its 60s confirmation. */
+  /** A cash out waiting for its 30s confirmation. */
   cashoutValue?: number | null;
   cashoutRequestedAt?: string | null;
 }

@@ -31,9 +31,9 @@ export interface Backend {
 
   /** Settle every bet & challenge on an event. Idempotent. */
   settleEvent(eventId: string, result: Result | null, homeScore?: string, awayScore?: string, quote?: Quote): Promise<void>;
-  /** Cash out an open bet at the current live price (confirmed after 60s). Returns the value. */
+  /** Cash out an open bet at the current live price (confirmed after 30s). Returns the value. */
   requestCashout(betId: string, quote: Quote): Promise<number>;
-  /** Confirm/reject live bets & cash outs that have waited 60s. */
+  /** Confirm/reject live bets & cash outs that have waited 30s. */
   confirmPending(eventId: string, quote: Quote): Promise<void>;
   setLiveBetting(groupId: string, on: boolean): Promise<void>;
   createCustomEvent(groupId: string, input: CustomEventInput): Promise<StoredEvent>;

@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useApp } from '../lib/store';
 import { fmtCoins, formatOdds, OUTCOME_INDEX } from '../lib/odds';
-import { fetchQuote, hasQuotes } from '../lib/quote';
+import { CONFIRM_SECONDS, fetchQuote, hasQuotes } from '../lib/quote';
 import type { Outcome } from '../lib/types';
 import { sportIcon } from '../lib/sports';
 import { eventPath, kickoff, pickLabel } from '../lib/util';
@@ -18,9 +18,9 @@ function CashOutButton({ betId, eventId, startTime, stake, odds, pick }: { betId
       const now = q.payload.odds?.[OUTCOME_INDEX[pick]];
       if (q.payload.state !== 'in' || !now) throw new Error('Cash out is only available while the match is live with a price');
       const est = Math.max(0.01, Math.round(((stake * odds) / now) * 100) / 100);
-      if (!confirm(`Cash out now for about ${fmtCoins(est)} coins?\n\nScore ${q.payload.score} (${q.payload.status}). It confirms after 60 seconds if the score doesn't change.`)) return;
+      if (!confirm(`Cash out now for about ${fmtCoins(est)} coins?\n\nScore ${q.payload.score} (${q.payload.status}). It confirms after ${CONFIRM_SECONDS} seconds if the score doesn't change.`)) return;
       const v = await backend.requestCashout(betId, q);
-      toast(`Cash out of ${fmtCoins(v)} requested — confirms in 60s ⏱️`, 'info');
+      toast(`Cash out of ${fmtCoins(v)} requested — confirms in ${CONFIRM_SECONDS}s ⏱️`, 'info');
       await refresh();
     } catch (e: any) {
       toast(e.message, 'error');

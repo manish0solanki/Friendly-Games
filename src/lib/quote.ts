@@ -22,6 +22,9 @@ export interface Quote {
   payload: QuotePayload;
 }
 
+/** How long a live bet / cash out waits before its score check (must match fg_confirm_pending in SQL). */
+export const CONFIRM_SECONDS = 30;
+
 /** Only real ESPN events (not group-made specials) have quotes. */
 export const hasQuotes = (eventId: string) => eventId.startsWith('espn:');
 

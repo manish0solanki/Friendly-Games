@@ -6,6 +6,7 @@ import { ago, eventPath, kickoff, pickLabel } from '../lib/util';
 import type { Result, StoredEvent } from '../lib/types';
 import { Avatar, Coins, Empty, Modal } from '../components/bits';
 import { CreateOrJoin } from './Onboarding';
+import { CONFIRM_SECONDS } from '../lib/quote';
 
 export function inviteLink(code: string): string {
   return `${location.origin}${location.pathname}#/join/${code}`;
@@ -111,7 +112,7 @@ export function GroupPage() {
                 </div>
                 <div className="muted" style={{ fontSize: 13, marginTop: 4 }}>
                   Bet during matches at live bookmaker prices and cash out early. Football closes at 80′, NBA/NFL at the 4th quarter, NHL at
-                  the 3rd period, MLB after the 6th. Bets confirm after 60s if the score holds.
+                  the 3rd period, MLB after the 6th. Bets confirm after {CONFIRM_SECONDS}s if the score holds.
                 </div>
               </div>
               <button

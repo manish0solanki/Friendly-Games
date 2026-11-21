@@ -4,7 +4,7 @@ import { fmtCoins, formatOdds, OUTCOME_INDEX, takerStake } from '../lib/odds';
 import { lineFor, pickLabel } from '../lib/util';
 import type { Match, Outcome } from '../lib/types';
 import { Coins, Modal } from './bits';
-import { fetchQuote } from '../lib/quote';
+import { CONFIRM_SECONDS, fetchQuote } from '../lib/quote';
 import { outcomesFor } from './MatchList';
 
 export function BetSlip({ onClose }: { onClose?: () => void }) {
@@ -35,7 +35,7 @@ export function BetSlip({ onClose }: { onClose?: () => void }) {
         removeSelection(it.match.id);
         ok++;
         if (r.pending)
-          toast(`Live bet taken at ${formatOdds(r.odds, oddsFormat)} — confirms in 60s if the score holds ⏱️`, 'info');
+          toast(`Live bet taken at ${formatOdds(r.odds, oddsFormat)} — confirms in ${CONFIRM_SECONDS}s if the score holds ⏱️`, 'info');
       } catch (e: any) {
         toast(`${it.match.name}: ${e.message}`, 'error');
       }
@@ -95,7 +95,7 @@ export function BetSlip({ onClose }: { onClose?: () => void }) {
                   </div>
                   <div className="ev">{it.match.name}</div>
                   <div className="ev">
-                    {it.match.state === 'in' ? `In-play ${it.match.statusText} · live price, confirmed after 60s` : `Match result · ${it.match.league}`}
+                    {it.match.state === 'in' ? `In-play ${it.match.statusText} · live price, confirmed after ${CONFIRM_SECONDS}s` : `Match result · ${it.match.league}`}
                   </div>
                 </div>
                 <span className="price">{formatOdds(it.odds, oddsFormat)}</span>
@@ -152,7 +152,7 @@ export function BetSlip({ onClose }: { onClose?: () => void }) {
             {busy ? 'Placing…' : `Place ${items.length > 1 ? `${items.length} bets` : 'bet'}`}
           </button>
           <div className="dim" style={{ fontSize: 11.5, marginTop: 8, textAlign: 'center' }}>
-            Odds lock in when you place. Live bets confirm after 60s if the score doesn't change. Coins only — no real money.
+            Odds lock in when you place. Live bets confirm after {CONFIRM_SECONDS}s if the score doesn't change. Coins only — no real money.
           </div>
         </div>
       )}

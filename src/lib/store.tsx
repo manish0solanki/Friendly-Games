@@ -4,7 +4,7 @@ import { LocalBackend } from './backend/local';
 import { SupabaseBackend } from './backend/supabase';
 import type { Backend } from './backend/types';
 import { fetchLeague, fetchMatch } from './espn';
-import { fetchQuote, hasQuotes } from './quote';
+import { CONFIRM_SECONDS, fetchQuote, hasQuotes } from './quote';
 import type { OddsFormat } from './odds';
 import type { Group, GroupData, Match, Outcome, Profile } from './types';
 
@@ -200,7 +200,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     };
   }, [data, settle, refresh]);
 
-  // Live bets and cash outs wait 60s, then are confirmed only if the score hasn't changed.
+  // Live bets and cash outs wait CONFIRM_SECONDS, then are confirmed only if the score hasn't changed.
   useEffect(() => {
     if (!data || backend.mode !== 'online') return;
     const tick = async () => {
@@ -210,8 +210,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
         d.bets
           .filter(
             (b) =>
-              (b.status === 'pending' && Date.now() - Date.parse(b.createdAt) > 61_000) ||
-              (b.status === 'open' && b.cashoutRequestedAt && Date.now() - Date.parse(b.cashoutRequestedAt) > 61_000),
+              (b.status === 'pending' && Date.now() - Date.parse(b.createdAt) > CONFIRM_SECONDS * 1000 + 1000) ||
+              (b.status === 'open' && b.cashoutRequestedAt && Date.now() - Date.parse(b.cashoutRequestedAt) > CONFIRM_SECONDS * 1000 + 1000),
           )
           .map((b) => b.eventId),
       );
@@ -232,7 +232,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       if (changed) await refresh();
     };
     tick();
-    const t = setInterval(tick, 15_000);
+    const t = setInterval(tick, 5_000);
     return () => clearInterval(t);
   }, [data, refresh]);
 

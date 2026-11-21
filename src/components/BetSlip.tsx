@@ -4,6 +4,7 @@ import { fmtCoins, formatOdds, OUTCOME_INDEX, takerStake } from '../lib/odds';
 import { lineFor, pickLabel } from '../lib/util';
 import type { Match, Outcome } from '../lib/types';
 import { Coins, Modal } from './bits';
+import { fetchQuote } from '../lib/quote';
 import { outcomesFor } from './MatchList';
 
 export function BetSlip({ onClose }: { onClose?: () => void }) {
@@ -28,9 +29,13 @@ export function BetSlip({ onClose }: { onClose?: () => void }) {
     let ok = 0;
     for (const it of items) {
       try {
-        await backend.placeBet(group.id, it.match, it.pick, it.stakeN);
+        const live = it.match.state === 'in';
+        const quote = live ? await fetchQuote(it.match.id, it.match.startTime) : undefined;
+        const r = await backend.placeBet(group.id, it.match, it.pick, it.stakeN, quote);
         removeSelection(it.match.id);
         ok++;
+        if (r.pending)
+          toast(`Live bet taken at ${formatOdds(r.odds, oddsFormat)} — confirms in 60s if the score holds ⏱️`, 'info');
       } catch (e: any) {
         toast(`${it.match.name}: ${e.message}`, 'error');
       }
@@ -84,9 +89,14 @@ export function BetSlip({ onClose }: { onClose?: () => void }) {
             <div className="sel-card" key={it.match.id}>
               <div className="top">
                 <div style={{ minWidth: 0 }}>
-                  <div className="pick">{pickLabel(it.match, it.pick)}</div>
+                  <div className="pick">
+                    {it.match.state === 'in' && <span className="live-tag" style={{ marginRight: 6 }}>● LIVE</span>}
+                    {pickLabel(it.match, it.pick)}
+                  </div>
                   <div className="ev">{it.match.name}</div>
-                  <div className="ev">Match result · {it.match.league}</div>
+                  <div className="ev">
+                    {it.match.state === 'in' ? `In-play ${it.match.statusText} · live price, confirmed after 60s` : `Match result · ${it.match.league}`}
+                  </div>
                 </div>
                 <span className="price">{formatOdds(it.odds, oddsFormat)}</span>
                 <button className="x" onClick={() => removeSelection(it.match.id)} aria-label="Remove">
@@ -142,7 +152,7 @@ export function BetSlip({ onClose }: { onClose?: () => void }) {
             {busy ? 'Placing…' : `Place ${items.length > 1 ? `${items.length} bets` : 'bet'}`}
           </button>
           <div className="dim" style={{ fontSize: 11.5, marginTop: 8, textAlign: 'center' }}>
-            Odds lock in when you place. Coins only — no real money.
+            Odds lock in when you place. Live bets confirm after 60s if the score doesn't change. Coins only — no real money.
           </div>
         </div>
       )}
@@ -181,7 +191,8 @@ export function ChallengeModal({
     setBusy(true);
     setError('');
     try {
-      await backend.createChallenge(group.id, match, pick, o, s, target || null, message);
+      const quote = match.state === 'in' ? await fetchQuote(match.id, match.startTime) : undefined;
+      await backend.createChallenge(group.id, match, pick, o, s, target || null, message, quote);
       await refresh();
       toast('Challenge sent! ⚔️');
       onDone?.();

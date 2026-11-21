@@ -46,7 +46,7 @@ export function AdminPage() {
   const name = (id?: string | null) => (id ? idx.userName.get(id) ?? 'unknown' : '—');
   const gname = (id: string) => idx.groupName.get(id) ?? 'unknown group';
   const ql = q.trim().toLowerCase();
-  const openBets = data.bets.filter((b) => b.status === 'open');
+  const openBets = data.bets.filter((b) => b.status === 'open' || b.status === 'pending');
   const inPlay =
     openBets.reduce((a, b) => a + b.stake, 0) +
     data.challenges.filter((c) => c.status === 'open' || c.status === 'matched').reduce((a, c) => a + c.stake + (c.takerId ? c.takerStake : 0), 0);
@@ -57,8 +57,8 @@ export function AdminPage() {
       const memberships = data.members.filter((m) => m.userId === p.id);
       const bets = data.bets.filter((b) => b.userId === p.id);
       const decided = bets.filter((b) => b.status === 'won' || b.status === 'lost');
-      const profit = decided.reduce((a, b) => a + b.payout - b.stake, 0);
-      return { p, memberships, bets, open: bets.filter((b) => b.status === 'open').length, decided, won: decided.filter((b) => b.status === 'won').length, profit };
+      const profit = bets.filter((b) => ['won', 'lost', 'cashed'].includes(b.status)).reduce((a, b) => a + b.payout - b.stake, 0);
+      return { p, memberships, bets, open: bets.filter((b) => b.status === 'open' || b.status === 'pending').length, decided, won: decided.filter((b) => b.status === 'won').length, profit };
     });
 
   const betRow = (b: Bet, showPlayer = true) => {
@@ -96,8 +96,10 @@ export function AdminPage() {
           {fmtCoins(b.stake)} <span style={{ color: 'var(--gold)' }}>@ {formatOdds(b.odds, oddsFormat)}</span>
         </td>
         <td className="r">
-          <span className={`status ${b.status}`}>{b.status}</span>
-          {b.status !== 'open' && b.status !== 'lost' && <div className="dim num" style={{ fontSize: 12 }}>{fmtCoins(b.payout)}</div>}
+          {b.live && <span className="live-tag" style={{ marginRight: 4 }}>LIVE</span>}
+          <span className={`status ${b.status}`}>{b.status === 'pending' ? 'confirming' : b.status === 'cashed' ? 'cashed out' : b.status}</span>
+          {['won', 'void', 'cashed'].includes(b.status) && <div className="dim num" style={{ fontSize: 12 }}>{fmtCoins(b.payout)}</div>}
+          {b.status === 'open' && b.cashoutRequestedAt && <div className="dim num" style={{ fontSize: 12 }}>cash out {fmtCoins(b.cashoutValue ?? 0)} pending</div>}
         </td>
       </tr>
     );
@@ -119,7 +121,7 @@ export function AdminPage() {
 
   const bets = data.bets.filter(
     (b) =>
-      (betFilter === 'all' || (betFilter === 'open' ? b.status === 'open' : b.status !== 'open')) &&
+      (betFilter === 'all' || (betFilter === 'open' ? b.status === 'open' || b.status === 'pending' : b.status !== 'open' && b.status !== 'pending')) &&
       (!ql || name(b.userId).includes(ql) || (data.events[b.eventId]?.name ?? '').toLowerCase().includes(ql)),
   );
 

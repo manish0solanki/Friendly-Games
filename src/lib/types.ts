@@ -21,6 +21,15 @@ export interface Match {
   result?: Result;
   venue?: string;
   custom?: boolean;
+  /** In-play details (ESPN scoreboard). */
+  period?: number;
+  clock?: number;
+  /** Current bookmaker prices while live, decimal [home, away, draw]. */
+  liveOdds?: [number, number, number];
+  /** Live betting window open (sport rules + live odds available). */
+  liveOpen?: boolean;
+  /** In-play head-to-head challenges allowed. */
+  challengeOpen?: boolean;
 }
 
 export interface Team {
@@ -43,6 +52,8 @@ export interface Group {
   inviteCode: string;
   startingBalance: number;
   createdBy: string;
+  /** In-play betting, in-play challenges and cash out allowed. */
+  liveBetting: boolean;
 }
 
 export interface Member {
@@ -53,7 +64,8 @@ export interface Member {
   joinedAt: string;
 }
 
-export type BetStatus = 'open' | 'won' | 'lost' | 'void';
+/** pending = live bet waiting 60s for confirmation; cashed = settled early via cash out. */
+export type BetStatus = 'pending' | 'open' | 'won' | 'lost' | 'void' | 'cashed';
 
 export interface Bet {
   id: string;
@@ -67,6 +79,11 @@ export interface Bet {
   payout: number;
   createdAt: string;
   settledAt?: string | null;
+  /** Placed in-play at a live bookmaker price. */
+  live?: boolean;
+  /** A cash out waiting for its 60s confirmation. */
+  cashoutValue?: number | null;
+  cashoutRequestedAt?: string | null;
 }
 
 export type ChallengeStatus = 'open' | 'matched' | 'settled' | 'void' | 'cancelled';

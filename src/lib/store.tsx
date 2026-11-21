@@ -3,7 +3,8 @@ import { IS_ONLINE } from './config';
 import { LocalBackend } from './backend/local';
 import { SupabaseBackend } from './backend/supabase';
 import type { Backend } from './backend/types';
-import { fetchLeague, fetchResult } from './espn';
+import { fetchLeague, fetchMatch } from './espn';
+import { fetchQuote, hasQuotes } from './quote';
 import type { OddsFormat } from './odds';
 import type { Group, GroupData, Match, Outcome, Profile } from './types';
 
@@ -75,6 +76,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [oddsFormat, setOddsFormatState] = useState<OddsFormat>((lsGet('fg-odds') as OddsFormat) || 'decimal');
   const [toasts, setToasts] = useState<Toast[]>([]);
   const settling = useRef(new Set<string>());
+  const confirming = useRef(new Set<string>());
   const dataRef = useRef<GroupData | null>(null);
   dataRef.current = data;
 
@@ -135,16 +137,19 @@ export function AppProvider({ children }: { children: ReactNode }) {
     setSlip([]);
   }, []);
 
-  // ---- automatic settlement --------------------------------------------------
+  // ---- automatic settlement & live confirmations ----------------------------------
+  // Real matches settle only with a server-signed result (api/quote), so nobody can fake a score.
   const settle = useCallback(
-    async (eventId: string, result: NonNullable<Match['result']>, hs?: string, as?: string) => {
+    async (eventId: string, startTime: string) => {
       if (settling.current.has(eventId)) return;
       settling.current.add(eventId);
       try {
-        await backend.settleEvent(eventId, result, hs, as);
+        const q = await fetchQuote(eventId, startTime);
+        if (!q.payload.result) throw new Error('not final yet');
+        await backend.settleEvent(eventId, null, undefined, undefined, q);
         await refresh();
       } catch {
-        settling.current.delete(eventId); // retry later
+        setTimeout(() => settling.current.delete(eventId), 60_000); // retry later
       }
     },
     [refresh],
@@ -156,31 +161,72 @@ export function AppProvider({ children }: { children: ReactNode }) {
       if (!d) return;
       for (const m of ms) {
         const ev = d.events[m.id];
-        if (m.result && ev && !ev.settledAt && !ev.groupId) settle(m.id, m.result, m.home.score, m.away.score);
+        if (!m.result || !ev || ev.settledAt || ev.groupId) continue;
+        if (backend.mode === 'online') settle(m.id, ev.startTime);
+        // demo mode has no signing server: settle straight from the feed
+        else backend.settleEvent(m.id, m.result, m.home.score, m.away.score).then(refresh, () => {});
       }
     },
-    [settle],
+    [settle, refresh],
   );
 
-  // Periodically look up results for events we have bets on but which aren't on screen.
+  // Look up results for events we have bets on but which aren't on screen.
   useEffect(() => {
     if (!data) return;
     const pending = Object.values(data.events).filter(
-      (e) => !e.settledAt && !e.groupId && new Date(e.startTime).getTime() < Date.now() - 60 * 60 * 1000,
+      (e) => !e.settledAt && !e.groupId && hasQuotes(e.id) && new Date(e.startTime).getTime() < Date.now() - 90 * 60 * 1000,
     );
-    if (!pending.length) return;
     let cancelled = false;
     (async () => {
       for (const e of pending.slice(0, 12)) {
-        if (cancelled || settling.current.has(e.id)) continue;
-        const r = await fetchResult(e).catch(() => null);
-        if (r && !cancelled) await settle(e.id, r.result, r.homeScore, r.awayScore);
+        if (cancelled) break;
+        if (backend.mode === 'online') await settle(e.id, e.startTime);
+        else {
+          const m = await fetchMatch(e.id).catch(() => null);
+          if (m?.result) await backend.settleEvent(e.id, m.result, m.home.score, m.away.score).then(refresh, () => {});
+        }
       }
     })();
     return () => {
       cancelled = true;
     };
-  }, [data, settle]);
+  }, [data, settle, refresh]);
+
+  // Live bets and cash outs wait 60s, then are confirmed only if the score hasn't changed.
+  useEffect(() => {
+    if (!data || backend.mode !== 'online') return;
+    const tick = async () => {
+      const d = dataRef.current;
+      if (!d) return;
+      const due = new Set(
+        d.bets
+          .filter(
+            (b) =>
+              (b.status === 'pending' && Date.now() - Date.parse(b.createdAt) > 61_000) ||
+              (b.status === 'open' && b.cashoutRequestedAt && Date.now() - Date.parse(b.cashoutRequestedAt) > 61_000),
+          )
+          .map((b) => b.eventId),
+      );
+      let changed = false;
+      for (const id of due) {
+        const ev = d.events[id];
+        if (!ev || confirming.current.has(id)) continue;
+        confirming.current.add(id);
+        try {
+          await backend.confirmPending(id, await fetchQuote(id, ev.startTime));
+          changed = true;
+        } catch {
+          /* retried on the next tick */
+        } finally {
+          confirming.current.delete(id);
+        }
+      }
+      if (changed) await refresh();
+    };
+    tick();
+    const t = setInterval(tick, 15_000);
+    return () => clearInterval(t);
+  }, [data, refresh]);
 
   // ---- bet slip ----------------------------------------------------------------
   const toggleSelection = useCallback((match: Match, pick: Outcome) => {

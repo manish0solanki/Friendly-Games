@@ -1,5 +1,6 @@
 import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 import { SUPABASE_ANON_KEY, SUPABASE_URL } from '../config';
+import { quoteArg, type Quote } from '../quote';
 import type { AdminOverview, Bet, Challenge, Group, GroupData, Member, StoredEvent } from '../types';
 import { cleanUsername, matchToStored, validateUsername, type Backend } from './types';
 
@@ -26,6 +27,7 @@ const mapGroup = (g: any): Group => ({
   inviteCode: g.invite_code,
   startingBalance: Number(g.starting_balance),
   createdBy: g.created_by,
+  liveBetting: g.live_betting !== false,
 });
 
 const mapBet = (x: any): Bet => ({
@@ -40,6 +42,9 @@ const mapBet = (x: any): Bet => ({
   payout: Number(x.payout),
   createdAt: x.created_at,
   settledAt: x.settled_at,
+  live: !!x.live,
+  cashoutValue: x.cashout_value == null ? null : Number(x.cashout_value),
+  cashoutRequestedAt: x.cashout_requested_at,
 });
 
 const mapChallenge = (x: any): Challenge => ({
@@ -207,12 +212,19 @@ export class SupabaseBackend implements Backend {
     };
   }
 
-  async placeBet(groupId: string, match: any, pick: any, stake: number) {
-    const { error } = await this.sb.rpc('fg_place_bet', { p_group: groupId, p_event: matchToStored(match), p_pick: pick, p_stake: stake });
+  async placeBet(groupId: string, match: any, pick: any, stake: number, quote?: Quote) {
+    const { data, error } = await this.sb.rpc('fg_place_bet', {
+      p_group: groupId,
+      p_event: matchToStored(match),
+      p_pick: pick,
+      p_stake: stake,
+      p_quote: quote ? quoteArg(quote) : null,
+    });
     err(error);
+    return { odds: Number(data?.odds), pending: data?.status === 'pending' };
   }
 
-  async createChallenge(groupId: string, match: any, pick: any, odds: number, stake: number, targetId: string | null, message: string) {
+  async createChallenge(groupId: string, match: any, pick: any, odds: number, stake: number, targetId: string | null, message: string, quote?: Quote) {
     const { error } = await this.sb.rpc('fg_create_challenge', {
       p_group: groupId,
       p_event: matchToStored(match),
@@ -221,12 +233,13 @@ export class SupabaseBackend implements Backend {
       p_stake: stake,
       p_target: targetId,
       p_message: message,
+      p_quote: quote ? quoteArg(quote) : null,
     });
     err(error);
   }
 
-  async acceptChallenge(id: string) {
-    const { error } = await this.sb.rpc('fg_accept_challenge', { p_id: id });
+  async acceptChallenge(id: string, quote?: Quote) {
+    const { error } = await this.sb.rpc('fg_accept_challenge', { p_id: id, p_quote: quote ? quoteArg(quote) : null });
     err(error);
   }
 
@@ -235,13 +248,30 @@ export class SupabaseBackend implements Backend {
     err(error);
   }
 
-  async settleEvent(eventId: string, result: any, homeScore?: string, awayScore?: string) {
+  async settleEvent(eventId: string, result: any, homeScore?: string, awayScore?: string, quote?: Quote) {
     const { error } = await this.sb.rpc('fg_settle_event', {
       p_event_id: eventId,
       p_result: result,
       p_home_score: homeScore ?? null,
       p_away_score: awayScore ?? null,
+      p_quote: quote ? quoteArg(quote) : null,
     });
+    err(error);
+  }
+
+  async requestCashout(betId: string, quote: Quote) {
+    const { data, error } = await this.sb.rpc('fg_request_cashout', { p_bet: betId, p_quote: quoteArg(quote) });
+    err(error);
+    return Number(data?.cashout_value);
+  }
+
+  async confirmPending(eventId: string, quote: Quote) {
+    const { error } = await this.sb.rpc('fg_confirm_pending', { p_event_id: eventId, p_quote: quoteArg(quote) });
+    err(error);
+  }
+
+  async setLiveBetting(groupId: string, on: boolean) {
+    const { error } = await this.sb.rpc('fg_set_live_betting', { p_group: groupId, p_on: on });
     err(error);
   }
 

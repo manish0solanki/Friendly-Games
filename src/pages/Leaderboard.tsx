@@ -20,7 +20,7 @@ export function Leaderboard() {
         else break;
       }
       const inPlay =
-        data.bets.filter((b) => b.userId === m.userId && b.status === 'open').reduce((a, b) => a + b.stake, 0) +
+        data.bets.filter((b) => b.userId === m.userId && (b.status === 'open' || b.status === 'pending')).reduce((a, b) => a + b.stake, 0) +
         data.challenges
           .filter((c) => c.status === 'open' || c.status === 'matched')
           .reduce((a, c) => a + (c.creatorId === m.userId ? c.stake : 0) + (c.takerId === m.userId ? c.takerStake : 0), 0);

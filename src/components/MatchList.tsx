@@ -2,7 +2,7 @@ import { Link } from 'react-router-dom';
 import { useApp } from '../lib/store';
 import { formatOdds } from '../lib/odds';
 import { sportIcon } from '../lib/sports';
-import { eventPath, isBettable, kickoff, lineFor } from '../lib/util';
+import { eventPath, isBettable, isLiveBettable, kickoff, lineFor } from '../lib/util';
 import type { Match, Outcome } from '../lib/types';
 import { TeamLogo } from './bits';
 
@@ -16,7 +16,8 @@ export function OddsButtons({ match, big }: { match: Match; big?: boolean }) {
   const { data, slip, toggleSelection, oddsFormat, group } = useApp();
   const line = lineFor(match, data);
   const stored = data?.events[match.id];
-  const open = !!group && isBettable(match, stored);
+  const live = isLiveBettable(match, stored, group);
+  const open = (!!group && isBettable(match, stored)) || live;
   const sel = slip.find((s) => s.match.id === match.id);
   const outs = outcomesFor(match);
   const idx = { home: 0, away: 1, draw: 2 } as const;
@@ -25,10 +26,16 @@ export function OddsButtons({ match, big }: { match: Match; big?: boolean }) {
       {outs.map((o) => (
         <button
           key={o}
-          className={`odd ${sel?.pick === o ? 'sel' : ''} ${match.result === o ? 'result-win' : ''}`}
+          className={`odd ${live ? 'live' : ''} ${sel?.pick === o ? 'sel' : ''} ${match.result === o ? 'result-win' : ''}`}
           disabled={!open}
           onClick={() => toggleSelection(match, o)}
-          title={open ? `Back ${o === 'draw' ? 'the draw' : o === 'home' ? match.home.name : match.away.name}` : 'Betting closed'}
+          title={
+            open
+              ? `${live ? 'Live: back' : 'Back'} ${o === 'draw' ? 'the draw' : o === 'home' ? match.home.name : match.away.name}`
+              : match.state === 'in'
+                ? 'In-play betting is closed for this match'
+                : 'Betting closed'
+          }
         >
           <span className="lbl">{big ? (o === 'home' ? match.home.name : o === 'away' ? match.away.name : 'Draw') : SHORT[o]}</span>
           <span className="val">{open ? formatOdds(line[idx[o]], oddsFormat) : match.result === o ? '✓' : '—'}</span>

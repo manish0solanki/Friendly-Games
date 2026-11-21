@@ -1,21 +1,50 @@
 import { useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useApp } from '../lib/store';
-import { fmtCoins, formatOdds } from '../lib/odds';
+import { fmtCoins, formatOdds, OUTCOME_INDEX } from '../lib/odds';
+import { fetchQuote, hasQuotes } from '../lib/quote';
+import type { Outcome } from '../lib/types';
 import { sportIcon } from '../lib/sports';
 import { eventPath, kickoff, pickLabel } from '../lib/util';
 import { Coins, Empty } from '../components/bits';
+
+function CashOutButton({ betId, eventId, startTime, stake, odds, pick }: { betId: string; eventId: string; startTime: string; stake: number; odds: number; pick: Outcome }) {
+  const { backend, refresh, toast } = useApp();
+  const [busy, setBusy] = useState(false);
+  async function go() {
+    setBusy(true);
+    try {
+      const q = await fetchQuote(eventId, startTime);
+      const now = q.payload.odds?.[OUTCOME_INDEX[pick]];
+      if (q.payload.state !== 'in' || !now) throw new Error('Cash out is only available while the match is live with a price');
+      const est = Math.max(0.01, Math.round(((stake * odds) / now) * 100) / 100);
+      if (!confirm(`Cash out now for about ${fmtCoins(est)} coins?\n\nScore ${q.payload.score} (${q.payload.status}). It confirms after 60 seconds if the score doesn't change.`)) return;
+      const v = await backend.requestCashout(betId, q);
+      toast(`Cash out of ${fmtCoins(v)} requested — confirms in 60s ⏱️`, 'info');
+      await refresh();
+    } catch (e: any) {
+      toast(e.message, 'error');
+    } finally {
+      setBusy(false);
+    }
+  }
+  return (
+    <button className="btn sm" style={{ marginTop: 6, borderColor: 'rgba(168,85,247,.5)' }} disabled={busy} onClick={go}>
+      {busy ? 'Checking price…' : '💸 Cash out'}
+    </button>
+  );
+}
 
 export function MyBets() {
   const { data, user, oddsFormat } = useApp();
   const [tab, setTab] = useState<'open' | 'settled'>('open');
   if (!data || !user) return null;
   const mine = data.bets.filter((b) => b.userId === user.id);
-  const open = mine.filter((b) => b.status === 'open');
-  const settled = mine.filter((b) => b.status !== 'open').sort((a, b) => (b.settledAt ?? '').localeCompare(a.settledAt ?? ''));
+  const open = mine.filter((b) => b.status === 'open' || b.status === 'pending');
+  const settled = mine.filter((b) => b.status !== 'open' && b.status !== 'pending').sort((a, b) => (b.settledAt ?? '').localeCompare(a.settledAt ?? ''));
   const decided = settled.filter((b) => b.status === 'won' || b.status === 'lost');
   const won = decided.filter((b) => b.status === 'won');
-  const profit = decided.reduce((a, b) => a + (b.payout - b.stake), 0);
+  const profit = settled.filter((b) => b.status !== 'void').reduce((a, b) => a + (b.payout - b.stake), 0);
   const me = data.members.find((m) => m.userId === user.id);
   const list = tab === 'open' ? open : settled;
 
@@ -65,6 +94,7 @@ export function MyBets() {
               <div className="bet-item" key={b.id}>
                 <div style={{ minWidth: 0 }}>
                   <div className="title">
+                    {b.live && <span className="live-tag" style={{ marginRight: 6 }}>● LIVE</span>}
                     {pickLabel(ev, b.pick)} <span style={{ color: 'var(--gold)' }}>@ {formatOdds(b.odds, oddsFormat)}</span>
                   </div>
                   <div className="sub">
@@ -78,13 +108,17 @@ export function MyBets() {
                   </div>
                 </div>
                 <div className="amt">
-                  <span className={`status ${b.status}`}>{b.status}</span>
+                  <span className={`status ${b.status}`}>{b.status === 'pending' ? 'confirming…' : b.status === 'cashed' ? 'cashed out' : b.status}</span>
                   <div className="num" style={{ marginTop: 6 }}>
                     Stake <b>{fmtCoins(b.stake)}</b>
                   </div>
                   <div className="sub num">
-                    {b.status === 'open' ? (
+                    {b.status === 'pending' ? (
+                      <>Confirms ~60s after placing if the score holds</>
+                    ) : b.status === 'open' ? (
                       <>To return {fmtCoins(b.stake * b.odds)}</>
+                    ) : b.status === 'cashed' ? (
+                      <span className={b.payout >= b.stake ? 'pos' : 'neg'}>Cashed out {fmtCoins(b.payout)}</span>
                     ) : b.status === 'won' ? (
                       <span className="pos">Returned {fmtCoins(b.payout)}</span>
                     ) : b.status === 'void' ? (
@@ -93,6 +127,14 @@ export function MyBets() {
                       <span className="neg">Lost</span>
                     )}
                   </div>
+                  {b.status === 'open' && b.cashoutRequestedAt && (
+                    <div className="sub" style={{ color: '#d8b4fe' }}>
+                      Cash out {fmtCoins(b.cashoutValue ?? 0)} confirming…
+                    </div>
+                  )}
+                  {b.status === 'open' && !b.cashoutRequestedAt && data.group.liveBetting && hasQuotes(ev.id) && !ev.settledAt && Date.parse(ev.startTime) <= Date.now() && (
+                    <CashOutButton betId={b.id} eventId={ev.id} startTime={ev.startTime} stake={b.stake} odds={b.odds} pick={b.pick} />
+                  )}
                 </div>
               </div>
             );

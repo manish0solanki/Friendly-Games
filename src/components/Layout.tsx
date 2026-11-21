@@ -10,7 +10,7 @@ export function useIncomingChallenges(): number {
   const { data, user } = useApp();
   if (!data || !user) return 0;
   return data.challenges.filter(
-    (c) => c.status === 'open' && c.creatorId !== user.id && (!c.targetId || c.targetId === user.id) && new Date(data.events[c.eventId]?.startTime ?? 0) > new Date(),
+    (c) => c.status === 'open' && c.creatorId !== user.id && (!c.targetId || c.targetId === user.id) && !data.events[c.eventId]?.settledAt && (new Date(data.events[c.eventId]?.startTime ?? 0) > new Date() || data.group.liveBetting),
   ).length;
 }
 

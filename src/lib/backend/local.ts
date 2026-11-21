@@ -5,6 +5,7 @@
  */
 import { computeLine, OUTCOME_INDEX, stakesFor, takerStake } from '../odds';
 import type { AdminOverview, Bet, Challenge, CustomEventInput, Group, GroupData, Match, Member, Outcome, Profile, Result, StoredEvent } from '../types';
+import type { Quote } from '../quote';
 import { cleanUsername, matchToStored, validateUsername, type Backend } from './types';
 
 interface DB {
@@ -119,7 +120,7 @@ export class LocalBackend implements Backend {
     if (name.trim().length < 2) throw new Error('Group name is too short');
     const alphabet = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';
     const code = Array.from({ length: 6 }, () => alphabet[Math.floor(Math.random() * alphabet.length)]).join('');
-    const g: Group = { id: uid(), name: name.trim(), inviteCode: code, startingBalance, createdBy: me.id };
+    const g: Group = { id: uid(), name: name.trim(), inviteCode: code, startingBalance, createdBy: me.id, liveBetting: true };
     this.db.groups.push(g);
     this.db.members.push({ groupId: g.id, userId: me.id, username: me.username, role: 'admin', balance: startingBalance, joinedAt: new Date().toISOString() });
     this.save();
@@ -146,7 +147,7 @@ export class LocalBackend implements Backend {
     return structuredClone({ group, members, bets, challenges, events });
   }
 
-  async placeBet(groupId: string, match: Match, pick: Outcome, stake: number) {
+  async placeBet(groupId: string, match: Match, pick: Outcome, stake: number): Promise<{ odds: number; pending: boolean }> {
     const me = this.me();
     const m = this.member(groupId, me.id);
     if (!m) throw new Error('You are not a member of this group');
@@ -162,6 +163,7 @@ export class LocalBackend implements Backend {
     });
     m.balance = r2(m.balance - stake);
     this.save();
+    return { odds: line[OUTCOME_INDEX[pick]], pending: false };
   }
 
   async createChallenge(groupId: string, match: Match, pick: Outcome, odds: number, stake: number, targetId: string | null, message: string) {
@@ -213,7 +215,20 @@ export class LocalBackend implements Backend {
     this.save();
   }
 
-  async settleEvent(eventId: string, result: Result, homeScore?: string, awayScore?: string) {
+  async requestCashout(): Promise<number> {
+    throw new Error('Cash out needs the online version (live prices come from the server)');
+  }
+  async confirmPending() {}
+  async setLiveBetting(groupId: string, on: boolean) {
+    if (!this.isAdmin(groupId)) throw new Error('Only group admins can change this');
+    const g = this.db.groups.find((x) => x.id === groupId);
+    if (g) g.liveBetting = on;
+    this.save();
+  }
+
+  async settleEvent(eventId: string, maybeResult: Result | null, homeScore?: string, awayScore?: string, quote?: Quote) {
+    let result = (quote?.payload.result ?? maybeResult) as Result;
+    if (!result) throw new Error('This match has not finished yet');
     const e = this.db.events[eventId];
     if (!e) throw new Error('Event not found');
     if (e.settledAt) return;

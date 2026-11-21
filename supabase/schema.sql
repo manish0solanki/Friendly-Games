@@ -93,10 +93,32 @@ create table if not exists public.fg_challenges (
   matched_at timestamptz,
   settled_at timestamptz
 );
+-- live betting & cash out
+create table if not exists public.fg_secrets (key text primary key, value text not null);
+alter table public.fg_secrets enable row level security;
+revoke all on public.fg_secrets from anon, authenticated;
+alter table public.fg_groups add column if not exists live_betting boolean not null default true;
+alter table public.fg_events add column if not exists live_score text;
+alter table public.fg_events add column if not exists live_score_at timestamptz;
+alter table public.fg_bets add column if not exists live boolean not null default false;
+alter table public.fg_bets add column if not exists quote_score text;
+alter table public.fg_bets add column if not exists cashout_value numeric(12,2);
+alter table public.fg_bets add column if not exists cashout_requested_at timestamptz;
+alter table public.fg_bets add column if not exists cashout_score text;
+alter table public.fg_bets drop constraint if exists fg_bets_status_check;
+alter table public.fg_bets add constraint fg_bets_status_check check (status in ('pending','open','won','lost','void','cashed'));
+create index if not exists fg_bets_pending_idx on public.fg_bets (event_id) where status = 'pending' or cashout_requested_at is not null;
+
 create index if not exists fg_challenges_group_idx on public.fg_challenges (group_id, created_at desc);
 create index if not exists fg_challenges_event_idx on public.fg_challenges (event_id) where status in ('open','matched');
 
 -- ---------------------------------------------------------------- helpers
+-- Older function signatures replaced by versions that accept a signed live quote.
+drop function if exists public.fg_place_bet(uuid, jsonb, text, numeric);
+drop function if exists public.fg_create_challenge(uuid, jsonb, text, numeric, numeric, uuid, text);
+drop function if exists public.fg_accept_challenge(uuid);
+drop function if exists public.fg_settle_event(text, text, text, text);
+
 -- Site admins (fg_profiles.is_super) see every group, player and bet, and have admin rights in every group.
 -- Promote someone with:  update public.fg_profiles set is_super = true where username = '<name>';
 create or replace function public.fg_is_super()
@@ -198,6 +220,11 @@ begin
     return e;
   end if;
   if v_id is null or v_id not like 'espn:%' then raise exception 'Unknown event'; end if;
+  if p_event->>'startTime' is null then
+    select * into e from fg_events where id = v_id;
+    if not found then raise exception 'Unknown event'; end if;
+    return e;
+  end if;
 
   select array_agg(least(1, greatest(0, x::numeric))) into v_probs
     from jsonb_array_elements_text(p_event->'baseProbs') x;
@@ -252,9 +279,9 @@ begin
 end $$;
 
 -- ---------------------------------------------------------------- betting
-create or replace function public.fg_place_bet(p_group uuid, p_event jsonb, p_pick text, p_stake numeric)
+create or replace function public.fg_place_bet(p_group uuid, p_event jsonb, p_pick text, p_stake numeric, p_quote jsonb default null)
 returns fg_bets language plpgsql security definer set search_path = public as $$
-declare m fg_members; e fg_events; line numeric[]; b fg_bets;
+declare m fg_members; e fg_events; line numeric[]; b fg_bets; v jsonb; v_odds numeric; v_idx int;
 begin
   select * into m from fg_members where group_id = p_group and user_id = auth.uid() for update;
   if not found then raise exception 'You are not a member of this group'; end if;
@@ -263,21 +290,58 @@ begin
   if m.balance < p_stake then raise exception 'Not enough coins — your balance is %', m.balance; end if;
 
   e := fg_ensure_event(p_event, p_group);
-  if e.settled_at is not null or e.start_time <= now() then raise exception 'Betting has closed for this event'; end if;
+  if e.settled_at is not null then raise exception 'Betting has closed for this event'; end if;
   if p_pick not in ('home', 'away') and not (p_pick = 'draw' and e.allow_draw) then raise exception 'Invalid selection'; end if;
+  v_idx := case p_pick when 'home' then 1 when 'away' then 2 else 3 end;
 
-  line := fg_compute_line(e.id, p_group);
-  insert into fg_bets (group_id, user_id, event_id, pick, stake, odds)
-  values (p_group, auth.uid(), e.id, p_pick, p_stake,
-          line[case p_pick when 'home' then 1 when 'away' then 2 else 3 end])
-  returning * into b;
+  if e.start_time > now() then
+    -- pre-match: the group line, locked in now
+    line := fg_compute_line(e.id, p_group);
+    insert into fg_bets (group_id, user_id, event_id, pick, stake, odds)
+    values (p_group, auth.uid(), e.id, p_pick, p_stake, line[v_idx])
+    returning * into b;
+  else
+    -- in-play: the live bookmaker price from a signed quote; confirmed after 60s if the score holds
+    if e.group_id is not null then raise exception 'Betting has closed for this event'; end if;
+    if not exists (select 1 from fg_groups where id = p_group and live_betting) then
+      raise exception 'Live betting is turned off in this group';
+    end if;
+    v := fg_verify_quote(p_quote, e.id, 20);
+    if v->>'state' <> 'in' or not coalesce((v->>'liveOpen')::boolean, false) then
+      raise exception 'Live betting is closed for this match';
+    end if;
+    v_odds := (v->'odds'->>(v_idx - 1))::numeric;
+    if v_odds is null or v_odds < 1.01 then raise exception 'No live price for that selection right now'; end if;
+    if fg_apply_quote(e.id, v) then raise exception 'The score just changed — live betting reopens in a minute'; end if;
+    insert into fg_bets (group_id, user_id, event_id, pick, stake, odds, status, live, quote_score)
+    values (p_group, auth.uid(), e.id, p_pick, p_stake, round(least(v_odds, 1000), 2), 'pending', true, v->>'score')
+    returning * into b;
+  end if;
   update fg_members set balance = balance - p_stake where group_id = p_group and user_id = auth.uid();
   return b;
 end $$;
 
+-- Checks that an event is still open for challenges: before the start, or in-play with a fresh signed quote.
+create or replace function public.fg_challenge_window(e fg_events, p_group uuid, p_quote jsonb)
+returns void language plpgsql security definer set search_path = public as $$
+declare v jsonb;
+begin
+  if e.settled_at is not null then raise exception 'Betting has closed for this event'; end if;
+  if e.start_time > now() then return; end if;
+  if e.group_id is not null then raise exception 'Betting has closed for this event'; end if;
+  if not exists (select 1 from fg_groups where id = p_group and live_betting) then
+    raise exception 'Betting has closed for this event (live betting is off in this group)';
+  end if;
+  v := fg_verify_quote(p_quote, e.id, 20);
+  if v->>'state' <> 'in' or not coalesce((v->>'challengeOpen')::boolean, false) then
+    raise exception 'In-play challenges are closed for this match';
+  end if;
+  if fg_apply_quote(e.id, v) then raise exception 'The score just changed — try again in a minute'; end if;
+end $$;
+
 create or replace function public.fg_create_challenge(
   p_group uuid, p_event jsonb, p_pick text, p_odds numeric, p_stake numeric,
-  p_target uuid default null, p_message text default null)
+  p_target uuid default null, p_message text default null, p_quote jsonb default null)
 returns fg_challenges language plpgsql security definer set search_path = public as $$
 declare m fg_members; e fg_events; c fg_challenges;
 begin
@@ -294,7 +358,7 @@ begin
   end if;
 
   e := fg_ensure_event(p_event, p_group);
-  if e.settled_at is not null or e.start_time <= now() then raise exception 'Betting has closed for this event'; end if;
+  perform fg_challenge_window(e, p_group, p_quote);
   if p_pick not in ('home', 'away') and not (p_pick = 'draw' and e.allow_draw) then raise exception 'Invalid selection'; end if;
 
   insert into fg_challenges (group_id, event_id, creator_id, pick, odds, stake, taker_stake, target_id, message)
@@ -305,7 +369,7 @@ begin
   return c;
 end $$;
 
-create or replace function public.fg_accept_challenge(p_id uuid)
+create or replace function public.fg_accept_challenge(p_id uuid, p_quote jsonb default null)
 returns fg_challenges language plpgsql security definer set search_path = public as $$
 declare c fg_challenges; m fg_members; e fg_events;
 begin
@@ -315,7 +379,7 @@ begin
   if c.creator_id = auth.uid() then raise exception 'You cannot accept your own challenge'; end if;
   if c.target_id is not null and c.target_id <> auth.uid() then raise exception 'This challenge was sent to someone else'; end if;
   select * into e from fg_events where id = c.event_id;
-  if e.settled_at is not null or e.start_time <= now() then raise exception 'Betting has closed for this event'; end if;
+  perform fg_challenge_window(e, c.group_id, p_quote);
   select * into m from fg_members where group_id = c.group_id and user_id = auth.uid() for update;
   if not found then raise exception 'You are not a member of this group'; end if;
   if m.balance < c.taker_stake then raise exception 'You need % coins to accept — your balance is %', c.taker_stake, m.balance; end if;
@@ -342,12 +406,11 @@ end $$;
 -- Called by the app as soon as it sees a final result from the live feed.
 -- Real events: any signed-in member can trigger it once the event has started.
 -- Custom (group-made) events: group admins only.
-create or replace function public.fg_settle_event(p_event_id text, p_result text, p_home_score text default null, p_away_score text default null)
+create or replace function public.fg_settle_event(p_event_id text, p_result text default null, p_home_score text default null, p_away_score text default null, p_quote jsonb default null)
 returns fg_events language plpgsql security definer set search_path = public as $$
-declare e fg_events;
+declare e fg_events; v jsonb;
 begin
   if auth.uid() is null then raise exception 'Please sign in'; end if;
-  if p_result not in ('home','away','draw','void') then raise exception 'Invalid result'; end if;
   select * into e from fg_events where id = p_event_id for update;
   if not found then raise exception 'Event not found'; end if;
   if e.settled_at is not null then return e; end if;
@@ -355,25 +418,32 @@ begin
   if e.group_id is not null then
     if not fg_is_admin(e.group_id) then raise exception 'Only group admins can settle custom events'; end if;
   else
-    if not exists (select 1 from fg_members where user_id = auth.uid()) then raise exception 'Not allowed'; end if;
-    if e.start_time > now() and p_result <> 'void' then raise exception 'This event has not started yet'; end if;
+    -- real matches settle only on a server-signed final result
+    if not (fg_is_super() or exists (select 1 from fg_members where user_id = auth.uid())) then raise exception 'Not allowed'; end if;
+    v := fg_verify_quote(p_quote, p_event_id, 300);
+    p_result := v->>'result';
+    if p_result is null then raise exception 'This match has not finished yet'; end if;
+    p_home_score := v->>'homeScore';
+    p_away_score := v->>'awayScore';
   end if;
+  if p_result is null or p_result not in ('home','away','draw','void') then raise exception 'Invalid result'; end if;
   if p_result = 'draw' and not e.allow_draw then p_result := 'void'; end if;
 
   -- 1) straight bets against the group line
   update fg_members gm set balance = gm.balance + x.amt
   from (
     select group_id, user_id,
-           sum(case when p_result = 'void' then stake when pick = p_result then round(stake * odds, 2) else 0 end) amt
-    from fg_bets where event_id = p_event_id and status = 'open' group by group_id, user_id
+           sum(case when status = 'pending' or p_result = 'void' then stake when pick = p_result then round(stake * odds, 2) else 0 end) amt
+    from fg_bets where event_id = p_event_id and status in ('open', 'pending') group by group_id, user_id
   ) x
   where gm.group_id = x.group_id and gm.user_id = x.user_id and x.amt > 0;
 
   update fg_bets set
-    status = case when p_result = 'void' then 'void' when pick = p_result then 'won' else 'lost' end,
-    payout = case when p_result = 'void' then stake when pick = p_result then round(stake * odds, 2) else 0 end,
+    status = case when status = 'pending' or p_result = 'void' then 'void' when pick = p_result then 'won' else 'lost' end,
+    payout = case when status = 'pending' or p_result = 'void' then stake when pick = p_result then round(stake * odds, 2) else 0 end,
+    cashout_value = null, cashout_requested_at = null, cashout_score = null,
     settled_at = now()
-  where event_id = p_event_id and status = 'open';
+  where event_id = p_event_id and status in ('open', 'pending');
 
   -- 2) head-to-head challenges
   update fg_members gm set balance = gm.balance + x.amt
@@ -404,6 +474,109 @@ begin
                     settled_at = now(), settled_by = auth.uid()
   where id = p_event_id returning * into e;
   return e;
+end $$;
+
+-- ---------------------------------------------------------------- live betting & signed quotes
+-- api/quote.ts signs match state (live odds, score, final result) with a secret shared only with this table.
+create or replace function public.fg_verify_quote(p_quote jsonb, p_event_id text, p_max_age_s int)
+returns jsonb language plpgsql stable security definer set search_path = public, extensions as $$
+declare v_secret text; v_p text := p_quote->>'p'; v jsonb; v_at timestamptz;
+begin
+  if v_p is null or p_quote->>'sig' is null then raise exception 'A live price is needed for this — please try again'; end if;
+  select value into v_secret from fg_secrets where key = 'quote';
+  if v_secret is null then raise exception 'Live betting is not configured on this server'; end if;
+  if encode(hmac(v_p, v_secret, 'sha256'), 'hex') <> (p_quote->>'sig') then raise exception 'Invalid live price signature'; end if;
+  v := v_p::jsonb;
+  if v->>'id' is distinct from p_event_id then raise exception 'That live price is for a different match'; end if;
+  v_at := to_timestamp((v->>'at')::double precision / 1000);
+  if v_at < now() - make_interval(secs => p_max_age_s) or v_at > now() + interval '30 seconds' then
+    raise exception 'The live price expired — please try again';
+  end if;
+  return v;
+end $$;
+
+-- Tracks the live score; returns true while betting is paused (60s after a score change).
+create or replace function public.fg_apply_quote(p_event_id text, v jsonb)
+returns boolean language plpgsql security definer set search_path = public as $$
+declare e fg_events;
+begin
+  select * into e from fg_events where id = p_event_id for update;
+  if not found then return false; end if;
+  if v->>'state' = 'in' and e.live_score is distinct from v->>'score' then
+    -- first sighting just records the score; a real change starts the pause
+    update fg_events set live_score = v->>'score',
+      live_score_at = case when e.live_score is null then now() - interval '1 hour' else now() end
+    where id = p_event_id;
+    return e.live_score is not null;
+  end if;
+  return coalesce(e.live_score_at > now() - interval '60 seconds', false);
+end $$;
+
+create or replace function public.fg_set_live_betting(p_group uuid, p_on boolean)
+returns fg_groups language plpgsql security definer set search_path = public as $$
+declare g fg_groups;
+begin
+  if not fg_is_admin(p_group) then raise exception 'Only group admins can change this'; end if;
+  update fg_groups set live_betting = coalesce(p_on, true) where id = p_group returning * into g;
+  return g;
+end $$;
+
+-- Ask to cash out an open bet at the current live price. Confirmed after 60s if the score hasn't changed.
+create or replace function public.fg_request_cashout(p_bet uuid, p_quote jsonb)
+returns fg_bets language plpgsql security definer set search_path = public as $$
+declare b fg_bets; v jsonb; v_odds numeric;
+begin
+  select * into b from fg_bets where id = p_bet for update;
+  if not found or b.user_id <> auth.uid() then raise exception 'Bet not found'; end if;
+  if b.status <> 'open' then raise exception 'Only open bets can be cashed out'; end if;
+  if b.cashout_requested_at is not null then raise exception 'Cash out already requested — it confirms within a minute'; end if;
+  if not exists (select 1 from fg_groups where id = b.group_id and live_betting) then
+    raise exception 'Live betting and cash out are turned off in this group';
+  end if;
+  v := fg_verify_quote(p_quote, b.event_id, 20);
+  if v->>'state' <> 'in' then raise exception 'Cash out is only available while the match is live'; end if;
+  v_odds := (v->'odds'->>(case b.pick when 'home' then 0 when 'away' then 1 else 2 end))::numeric;
+  if v_odds is null or v_odds < 1.01 then raise exception 'No live price right now — try again shortly'; end if;
+  if fg_apply_quote(b.event_id, v) then raise exception 'The score just changed — cash out reopens in a minute'; end if;
+  update fg_bets set cashout_value = greatest(0.01, round(stake * odds / v_odds, 2)),
+                     cashout_requested_at = now(), cashout_score = v->>'score'
+  where id = p_bet returning * into b;
+  return b;
+end $$;
+
+-- Confirms (or rejects) live bets and cash outs that have waited 60s, using a fresh signed quote.
+-- Accepted only if the score is unchanged since the request — protects against delayed feeds.
+create or replace function public.fg_confirm_pending(p_event_id text, p_quote jsonb)
+returns integer language plpgsql security definer set search_path = public as $$
+declare v jsonb; v_cut timestamptz; v_live boolean; n int;
+begin
+  if auth.uid() is null then raise exception 'Please sign in'; end if;
+  v := fg_verify_quote(p_quote, p_event_id, 30);
+  v_cut := to_timestamp((v->>'at')::double precision / 1000) - interval '60 seconds';
+  v_live := v->>'state' = 'in';
+  perform fg_apply_quote(p_event_id, v);
+
+  update fg_bets set status = 'open'
+  where event_id = p_event_id and status = 'pending' and created_at <= v_cut and v_live and quote_score = v->>'score';
+  get diagnostics n = row_count;
+
+  update fg_members gm set balance = gm.balance + x.amt
+  from (select group_id, user_id, sum(stake) amt from fg_bets
+        where event_id = p_event_id and status = 'pending' and created_at <= v_cut group by group_id, user_id) x
+  where gm.group_id = x.group_id and gm.user_id = x.user_id;
+  update fg_bets set status = 'void', payout = stake, settled_at = now()
+  where event_id = p_event_id and status = 'pending' and created_at <= v_cut;
+
+  update fg_members gm set balance = gm.balance + x.amt
+  from (select group_id, user_id, sum(cashout_value) amt from fg_bets
+        where event_id = p_event_id and status = 'open' and cashout_requested_at <= v_cut and v_live and cashout_score = v->>'score'
+        group by group_id, user_id) x
+  where gm.group_id = x.group_id and gm.user_id = x.user_id;
+  update fg_bets set status = 'cashed', payout = cashout_value, settled_at = now()
+  where event_id = p_event_id and status = 'open' and cashout_requested_at <= v_cut and v_live and cashout_score = v->>'score';
+  update fg_bets set cashout_value = null, cashout_requested_at = null, cashout_score = null
+  where event_id = p_event_id and status = 'open' and cashout_requested_at <= v_cut;
+  return n;
 end $$;
 
 -- ---------------------------------------------------------------- admin tools
@@ -483,21 +656,25 @@ create policy "fg_challenges for members" on public.fg_challenges for select to 
 
 -- No insert/update/delete policies: every write goes through the functions above.
 revoke all on function public.fg_is_super(), public.fg_is_member(uuid), public.fg_is_admin(uuid), public.fg_compute_line(text, uuid),
-  public.fg_ensure_event(jsonb, uuid) from public, anon;
-revoke all on function public.fg_ensure_event(jsonb, uuid) from authenticated;
+  public.fg_ensure_event(jsonb, uuid), public.fg_verify_quote(jsonb, text, int), public.fg_apply_quote(text, jsonb),
+  public.fg_challenge_window(fg_events, uuid, jsonb) from public, anon;
+revoke all on function public.fg_ensure_event(jsonb, uuid), public.fg_verify_quote(jsonb, text, int), public.fg_apply_quote(text, jsonb),
+  public.fg_challenge_window(fg_events, uuid, jsonb) from authenticated;
 revoke all on function public.fg_create_group(text, numeric), public.fg_join_group(text),
-  public.fg_place_bet(uuid, jsonb, text, numeric),
-  public.fg_create_challenge(uuid, jsonb, text, numeric, numeric, uuid, text),
-  public.fg_accept_challenge(uuid), public.fg_cancel_challenge(uuid), public.fg_settle_event(text, text, text, text),
+  public.fg_place_bet(uuid, jsonb, text, numeric, jsonb),
+  public.fg_create_challenge(uuid, jsonb, text, numeric, numeric, uuid, text, jsonb),
+  public.fg_accept_challenge(uuid, jsonb), public.fg_cancel_challenge(uuid), public.fg_settle_event(text, text, text, text, jsonb),
   public.fg_create_custom_event(uuid, text, text, text, boolean, timestamptz, text),
-  public.fg_adjust_balance(uuid, uuid, numeric), public.fg_set_member_role(uuid, uuid, text) from public, anon;
+  public.fg_adjust_balance(uuid, uuid, numeric), public.fg_set_member_role(uuid, uuid, text),
+  public.fg_set_live_betting(uuid, boolean), public.fg_request_cashout(uuid, jsonb), public.fg_confirm_pending(text, jsonb) from public, anon;
 grant execute on function public.fg_is_super(), public.fg_is_member(uuid), public.fg_is_admin(uuid), public.fg_compute_line(text, uuid),
   public.fg_create_group(text, numeric), public.fg_join_group(text),
-  public.fg_place_bet(uuid, jsonb, text, numeric),
-  public.fg_create_challenge(uuid, jsonb, text, numeric, numeric, uuid, text),
-  public.fg_accept_challenge(uuid), public.fg_cancel_challenge(uuid), public.fg_settle_event(text, text, text, text),
+  public.fg_place_bet(uuid, jsonb, text, numeric, jsonb),
+  public.fg_create_challenge(uuid, jsonb, text, numeric, numeric, uuid, text, jsonb),
+  public.fg_accept_challenge(uuid, jsonb), public.fg_cancel_challenge(uuid), public.fg_settle_event(text, text, text, text, jsonb),
   public.fg_create_custom_event(uuid, text, text, text, boolean, timestamptz, text),
-  public.fg_adjust_balance(uuid, uuid, numeric), public.fg_set_member_role(uuid, uuid, text) to authenticated;
+  public.fg_adjust_balance(uuid, uuid, numeric), public.fg_set_member_role(uuid, uuid, text),
+  public.fg_set_live_betting(uuid, boolean), public.fg_request_cashout(uuid, jsonb), public.fg_confirm_pending(text, jsonb) to authenticated;
 grant execute on function public.fg_username_taken(text) to anon, authenticated;
 revoke all on function public.fg_sign_up(text, text) from public;
 grant execute on function public.fg_sign_up(text, text) to anon, authenticated;

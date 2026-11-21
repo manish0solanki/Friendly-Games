@@ -5,7 +5,9 @@ A free, private sportsbook for you and your friends: **virtual coins only, no re
 - **Real fixtures and live scores** for football (Premier League, LaLiga, Serie A, Bundesliga, Ligue 1, Champions League, Europa League, MLS, ISL, Saudi Pro League and more), cricket, NBA, NFL, NHL, MLB, tennis (ATP/WTA) and UFC. The data comes from ESPN's public feed, which needs no key and costs nothing.
 - **Group line betting:** every match has 1X2 or moneyline odds. They start from real bookmaker prices where ESPN publishes them, and shift as your group bets. Your odds lock in when you place the bet.
 - **Head-to-head challenges:** set your own odds and stake, send the challenge to one friend or the whole group, and the winner takes the pot.
-- **Automatic settlement:** when a match finishes, bets and challenges settle on their own. Postponed or abandoned games are voided and stakes refunded.
+- **Live betting (in-play):** bet during matches at live bookmaker prices. Football closes at the 80th minute, NBA/NFL at the 4th quarter, NHL at the 3rd period and MLB after the 6th inning. Betting pauses for 60 seconds after any score change, and each live bet confirms 60 seconds after it's placed, but only if the score hasn't changed (the standard bookmaker defence against delayed feeds). Group admins can switch live betting off.
+- **Cash out:** settle an open bet early at the current live price (`stake × your odds ÷ current odds`), confirmed the same way after 60 seconds.
+- **Automatic settlement:** when a match finishes, bets and challenges settle on their own, but only with a server-signed result, so nobody can fake a score. Postponed or abandoned games are voided and stakes refunded.
 - **Private groups** you join with an invite code or a WhatsApp invite link, plus a leaderboard, win streaks and an activity feed.
 - **Group specials:** admins can create custom markets ("Will Rohit score a century?") and settle them by hand.
 - Decimal, fractional or American odds. Works on phones and desktops.
@@ -73,7 +75,12 @@ The browser fetches ESPN data through `api/espn.ts`, a small Vercel Edge Functio
 - `supabase/schema.sql` contains the tables, row-level security, and all the coin-moving functions (`place_bet`, `create_challenge`, `accept_challenge`, `settle_event`, and the others). The browser cannot edit balances directly.
 - `src/lib/backend/` has two interchangeable backends: Supabase (online) and localStorage (demo).
 
-**Trust model:** this is built for friends. The first app that sees a final score from ESPN settles the event. Any group member could, in principle, use developer tools to report a wrong result for a real match. If your group is that competitive, have a stern word with them 😄
+**Trust model:** live prices and final results come from `api/quote.ts`, which reads ESPN on the server and signs the data with a secret (`QUOTE_SECRET` in Vercel, also stored in the locked `fg_secrets` table). The database refuses any live bet, cash out or settlement without a valid, fresh signature, so nobody can fake odds or results from the browser. If you set up a new deployment, put the same random value in both places:
+
+```sql
+insert into public.fg_secrets (key, value) values ('quote', '<random 64-char hex>')
+  on conflict (key) do update set value = excluded.value;
+```
 
 ## Scripts
 

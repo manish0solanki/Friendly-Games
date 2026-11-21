@@ -1,3 +1,4 @@
+import type { Quote } from '../quote';
 import type { AdminOverview, CustomEventInput, Group, GroupData, Match, Outcome, Profile, Result, StoredEvent } from '../types';
 
 export interface Backend {
@@ -13,7 +14,8 @@ export interface Backend {
   joinGroup(code: string): Promise<Group>;
   groupData(groupId: string): Promise<GroupData>;
 
-  placeBet(groupId: string, match: Match, pick: Outcome, stake: number): Promise<void>;
+  /** In-play bets need a signed live quote. Returns the odds the bet was taken at. */
+  placeBet(groupId: string, match: Match, pick: Outcome, stake: number, quote?: Quote): Promise<{ odds: number; pending: boolean }>;
   createChallenge(
     groupId: string,
     match: Match,
@@ -22,12 +24,18 @@ export interface Backend {
     stake: number,
     targetId: string | null,
     message: string,
+    quote?: Quote,
   ): Promise<void>;
-  acceptChallenge(id: string): Promise<void>;
+  acceptChallenge(id: string, quote?: Quote): Promise<void>;
   cancelChallenge(id: string): Promise<void>;
 
   /** Settle every bet & challenge on an event. Idempotent. */
-  settleEvent(eventId: string, result: Result, homeScore?: string, awayScore?: string): Promise<void>;
+  settleEvent(eventId: string, result: Result | null, homeScore?: string, awayScore?: string, quote?: Quote): Promise<void>;
+  /** Cash out an open bet at the current live price (confirmed after 60s). Returns the value. */
+  requestCashout(betId: string, quote: Quote): Promise<number>;
+  /** Confirm/reject live bets & cash outs that have waited 60s. */
+  confirmPending(eventId: string, quote: Quote): Promise<void>;
+  setLiveBetting(groupId: string, on: boolean): Promise<void>;
   createCustomEvent(groupId: string, input: CustomEventInput): Promise<StoredEvent>;
   adjustBalance(groupId: string, userId: string, amount: number): Promise<void>;
   setRole(groupId: string, userId: string, role: 'admin' | 'member'): Promise<void>;

@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom';
 import { useApp } from '../lib/store';
 import { fmtCoins, formatOdds } from '../lib/odds';
 import { eventPath, kickoff, pickLabel } from '../lib/util';
+import { fetchQuote, hasQuotes } from '../lib/quote';
 import type { Challenge } from '../lib/types';
 import { Avatar, Empty } from '../components/bits';
 
@@ -13,14 +14,17 @@ export function ChallengeCard({ c, compact }: { c: Challenge; compact?: boolean 
   if (!ev || !data) return null;
   const nameOf = (id?: string | null) => (id === user?.id ? 'You' : data.members.find((m) => m.userId === id)?.username ?? 'someone');
   const started = new Date(ev.startTime) <= new Date();
-  const canAccept = c.status === 'open' && c.creatorId !== user?.id && (!c.targetId || c.targetId === user?.id) && !started;
+  const group = data.group;
+  // in-play acceptance is allowed when the group has live betting on (the server checks the live window)
+  const canAccept =
+    c.status === 'open' && c.creatorId !== user?.id && (!c.targetId || c.targetId === user?.id) && !ev.settledAt && (!started || (group.liveBetting && hasQuotes(ev.id)));
   const canCancel = c.status === 'open' && (c.creatorId === user?.id || !!user?.isSuper || data.members.find((m) => m.userId === user?.id)?.role === 'admin');
   const k = kickoff(ev.startTime);
   const iWon = c.status === 'settled' && c.winnerId === user?.id;
   const involved = c.creatorId === user?.id || c.takerId === user?.id;
   const statusClass = c.status === 'settled' ? (involved ? (iWon ? 'won' : 'lost') : 'won') : c.status;
   const statusText =
-    c.status === 'settled' ? `${nameOf(c.winnerId)} won` : c.status === 'open' && started ? 'expired' : c.status === 'void' ? 'void · refunded' : c.status;
+    c.status === 'settled' ? `${nameOf(c.winnerId)} won` : c.status === 'open' && started ? 'in-play' : c.status === 'void' ? 'void · refunded' : c.status;
 
   async function act(fn: () => Promise<void>, msg: string) {
     setBusy(true);
@@ -72,7 +76,16 @@ export function ChallengeCard({ c, compact }: { c: Challenge; compact?: boolean 
         <div className="sub">Pot {fmtCoins(c.stake + c.takerStake)}</div>
         <div className="row" style={{ justifyContent: 'flex-end', marginTop: 6 }}>
           {canAccept && (
-            <button className="btn primary sm" disabled={busy} onClick={() => act(() => backend.acceptChallenge(c.id), 'Challenge accepted! 🔥')}>
+            <button
+              className="btn primary sm"
+              disabled={busy}
+              onClick={() =>
+                act(async () => {
+                  const quote = started && hasQuotes(ev.id) ? await fetchQuote(ev.id, ev.startTime) : undefined;
+                  await backend.acceptChallenge(c.id, quote);
+                }, 'Challenge accepted! 🔥')
+              }
+            >
               Accept · risk {fmtCoins(c.takerStake)}
             </button>
           )}
@@ -95,7 +108,7 @@ export function ChallengesPage() {
   if (!data || !user) return null;
   const now = new Date();
   const incoming = data.challenges.filter(
-    (c) => c.status === 'open' && c.creatorId !== user.id && (!c.targetId || c.targetId === user.id) && new Date(data.events[c.eventId]?.startTime ?? 0) > now,
+    (c) => c.status === 'open' && c.creatorId !== user.id && (!c.targetId || c.targetId === user.id) && !data.events[c.eventId]?.settledAt && (new Date(data.events[c.eventId]?.startTime ?? 0) > now || data.group.liveBetting),
   );
   const mine = data.challenges.filter((c) => c.creatorId === user.id || c.takerId === user.id);
   const list = tab === 'incoming' ? incoming : tab === 'mine' ? mine : data.challenges;

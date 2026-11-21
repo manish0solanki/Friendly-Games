@@ -4,7 +4,7 @@ import { useApp } from '../lib/store';
 import { fetchMatch } from '../lib/espn';
 import { fmtCoins, formatOdds, stakesFor } from '../lib/odds';
 import { sportIcon } from '../lib/sports';
-import { ago, isBettable, kickoff, pickLabel, storedToMatch } from '../lib/util';
+import { ago, isBettable, isLiveBettable, kickoff, pickLabel, storedToMatch } from '../lib/util';
 import type { Match } from '../lib/types';
 import { Avatar, Empty, TeamLogo } from '../components/bits';
 import { OddsButtons, outcomesFor } from '../components/MatchList';
@@ -34,7 +34,7 @@ export function EventPage() {
       if (m) reportMatches([m]);
     };
     load();
-    const t = setInterval(load, 45_000);
+    const t = setInterval(load, 30_000);
     return () => {
       alive = false;
       clearInterval(t);
@@ -51,6 +51,18 @@ export function EventPage() {
   const pool = stakes[0] + stakes[1] + stakes[2];
   const k = kickoff(match.startTime);
   const open = !!group && isBettable(match, stored);
+  const liveOpen = isLiveBettable(match, stored, group);
+  const challengeLive = !!group?.liveBetting && match.state === 'in' && !!match.challengeOpen && !match.custom && !stored?.settledAt;
+  const liveClosedReason =
+    match.state !== 'in' || match.custom
+      ? null
+      : !group?.liveBetting
+        ? 'Live betting is turned off for this group (admins can switch it on in Group).'
+        : !match.liveOdds
+          ? 'No live prices for this match, so in-play betting is closed.'
+          : !match.liveOpen
+            ? 'In-play betting has closed for this match (football closes at 80′, NBA/NFL at the 4th quarter, NHL at the 3rd period, MLB after the 6th).'
+            : null;
   const colors = { home: '#3b82f6', draw: '#94a3b8', away: '#f97316' };
   const showScore = match.state !== 'pre' && (match.home.score != null || match.away.score != null);
 
@@ -93,8 +105,9 @@ export function EventPage() {
           <div className="card market">
             <div className="market-head">
               Match result <span className="pill">{match.allowDraw ? '1X2' : 'Moneyline'}</span>
+              {liveOpen && <span className="live-tag">● IN-PLAY</span>}
               <span className="spacer" />
-              {!open && <span className="dim" style={{ fontWeight: 600, fontSize: 12 }}>Closed</span>}
+              {!open && !liveOpen && <span className="dim" style={{ fontWeight: 600, fontSize: 12 }}>Closed</span>}
             </div>
             <div className="market-body">
               <OddsButtons match={match} big />
@@ -117,7 +130,10 @@ export function EventPage() {
                 </>
               )}
               <div className="dim" style={{ fontSize: 12, marginTop: 12 }}>
-                The group line starts from bookmaker odds where available and moves as your friends bet. Your odds lock when you place.
+                {liveOpen
+                  ? 'In-play prices come from a live bookmaker feed. Live bets confirm after 60 seconds if the score hasn’t changed; betting pauses for a minute after every goal or score.'
+                  : liveClosedReason ??
+                    'The group line starts from bookmaker odds where available and moves as your friends bet. Your odds lock when you place.'}
               </div>
             </div>
           </div>
@@ -126,7 +142,7 @@ export function EventPage() {
             <div className="market-head">
               ⚔️ Head-to-head challenges
               <span className="spacer" />
-              {open && (
+              {(open || challengeLive) && (
                 <button className="btn primary sm" onClick={() => setChallengeOpen(true)}>
                   New challenge
                 </button>
@@ -136,7 +152,7 @@ export function EventPage() {
               challenges.map((c) => <ChallengeCard key={c.id} c={c} compact />)
             ) : (
               <Empty icon="🤝" title="No challenges yet">
-                {open ? 'Set your own odds and dare a friend to take the other side.' : 'Challenges close at kick-off.'}
+                {open || challengeLive ? 'Set your own odds and dare a friend to take the other side.' : 'Challenges are closed for this match.'}
               </Empty>
             )}
           </div>
@@ -153,7 +169,12 @@ export function EventPage() {
                 <div>
                   <b>{b.userId === user?.id ? 'You' : nameOf(b.userId)}</b> backed <b>{pickLabel(match, b.pick)}</b> — {fmtCoins(b.stake)} @{' '}
                   <span style={{ color: 'var(--gold)', fontWeight: 700 }}>{formatOdds(b.odds, oddsFormat)}</span>
-                  {b.status !== 'open' && <span className={`status ${b.status}`} style={{ marginLeft: 8 }}>{b.status}</span>}
+                  {b.live && <span className="live-tag" style={{ marginLeft: 8 }}>LIVE</span>}
+                  {b.status !== 'open' && (
+                    <span className={`status ${b.status}`} style={{ marginLeft: 8 }}>
+                      {b.status === 'pending' ? 'confirming' : b.status === 'cashed' ? `cashed out ${fmtCoins(b.payout)}` : b.status}
+                    </span>
+                  )}
                 </div>
                 <span className="when">{ago(b.createdAt)}</span>
               </div>

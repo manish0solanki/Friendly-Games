@@ -1,5 +1,5 @@
 import { computeLine, stakesFor } from './odds';
-import type { GroupData, Match, Outcome, StoredEvent } from './types';
+import type { Group, GroupData, Match, Outcome, StoredEvent } from './types';
 
 const COLORS = ['#ef4444', '#f97316', '#eab308', '#22c55e', '#14b8a6', '#3b82f6', '#6366f1', '#a855f7', '#ec4899', '#0ea5e9'];
 export function colorFor(s: string): string {
@@ -39,8 +39,14 @@ export function isBettable(m: Match, stored?: StoredEvent): boolean {
   return m.state === 'pre' && !m.result && new Date(m.startTime).getTime() > Date.now();
 }
 
+/** In-play: live window open, live prices available, and the group allows live betting. */
+export function isLiveBettable(m: Match, stored: StoredEvent | undefined, group: Group | null): boolean {
+  return !!group?.liveBetting && !stored?.settledAt && m.state === 'in' && !m.result && !!m.liveOpen && !!m.liveOdds && !m.custom;
+}
+
 /** Current group line for a match (uses the stored base line once anyone has bet, like the server does). */
 export function lineFor(m: Match, data: GroupData | null): [number, number, number] {
+  if (m.state === 'in' && m.liveOdds) return m.liveOdds; // in-play: live bookmaker prices
   const stored = data?.events[m.id];
   const base = stored?.baseProbs ?? m.baseProbs;
   return computeLine(base, m.allowDraw, data ? stakesFor(data.bets, m.id) : [0, 0, 0]);

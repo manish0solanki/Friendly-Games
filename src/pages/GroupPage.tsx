@@ -12,7 +12,7 @@ export function inviteLink(code: string): string {
 }
 
 export function GroupPage() {
-  const { data, user, group, backend, refresh, toast } = useApp();
+  const { data, user, group, backend, refresh, refreshGroups, toast } = useApp();
   const [params, setParams] = useSearchParams();
   const [adjust, setAdjust] = useState<{ userId: string; username: string } | null>(null);
   const [eventOpen, setEventOpen] = useState(false);
@@ -101,6 +101,36 @@ export function GroupPage() {
                 In demo mode, friends must use this same browser (sign out → create another player → join with the code).
               </div>
             )}
+          </div>
+
+          <div className="card card-pad" style={{ marginBottom: 16 }}>
+            <div className="row" style={{ alignItems: 'flex-start', gap: 12 }}>
+              <div style={{ flex: 1 }}>
+                <div style={{ fontWeight: 800 }}>
+                  <span className="live-tag" style={{ marginRight: 6 }}>● LIVE</span>In-play betting & cash out
+                </div>
+                <div className="muted" style={{ fontSize: 13, marginTop: 4 }}>
+                  Bet during matches at live bookmaker prices and cash out early. Football closes at 80′, NBA/NFL at the 4th quarter, NHL at
+                  the 3rd period, MLB after the 6th. Bets confirm after 60s if the score holds.
+                </div>
+              </div>
+              <button
+                className={`toggle ${group.liveBetting ? 'on' : ''}`}
+                disabled={!isAdmin}
+                title={isAdmin ? 'Turn live betting on or off for this group' : 'Only group admins can change this'}
+                aria-label="Live betting"
+                onClick={async () => {
+                  try {
+                    await backend.setLiveBetting(group.id, !group.liveBetting);
+                    await refreshGroups();
+                    await refresh();
+                    toast(`Live betting ${group.liveBetting ? 'turned off' : 'turned on'}`);
+                  } catch (e: any) {
+                    toast(e.message, 'error');
+                  }
+                }}
+              />
+            </div>
           </div>
 
           <div className="card" style={{ marginBottom: 16 }}>
